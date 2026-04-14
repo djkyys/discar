@@ -21,8 +21,11 @@ struct StatusView: View {
                         message: viewModel.ctlrMessage
                     )
 
-                    // 2. OBD Status
-                    OBDStatusCard()
+                    // 2. CAN Bus Status
+                    CANStatusCard(
+                        connected: viewModel.canConnected,
+                        frameCount: viewModel.canFrameCount
+                    )
 
                     // 3. Refresh Button
                     Button(action: {

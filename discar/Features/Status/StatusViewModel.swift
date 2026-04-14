@@ -36,6 +36,10 @@ class StatusViewModel: ObservableObject {
     @Published var memPercent: Double = 0
     @Published var tempC: Double = 0
 
+    // CAN Bus Status
+    @Published var canConnected: Bool = false
+    @Published var canFrameCount: Int = 0
+
     // Storage Health
     @Published var storageHealthy: Bool = true
     @Published var loggingMounted: Bool = true
@@ -177,6 +181,10 @@ class StatusViewModel: ObservableObject {
                 cpuPercent = system.cpu_percent
                 memPercent = system.mem_percent
                 tempC = system.temp_c ?? 0
+            }
+            if let can = status.can {
+                canConnected = can.connected
+                canFrameCount = can.frame_count
             }
 
             if status.recording {
@@ -374,6 +382,12 @@ private struct StatusAPIResponse: Codable {
     let cameras: [CameraStatus]
     let storage: StorageInfo?
     let system: SystemInfo?
+    let can: CANInfo?
+
+    struct CANInfo: Codable {
+        let connected: Bool
+        let frame_count: Int
+    }
 
     struct CameraStatus: Codable {
         let name: String

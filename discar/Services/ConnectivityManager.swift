@@ -11,6 +11,7 @@ class ConnectivityManager: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = ConnectivityManager()
     
     @Published var receivedCommand: WatchCommand?
+    @Published var isWatchConnected: Bool = false
     
     enum WatchCommand: String {
         case startRecording
@@ -65,20 +66,28 @@ class ConnectivityManager: NSObject, ObservableObject, WCSessionDelegate {
                 self.receivedCommand = command
                 
                 if command == .getStatus {
-                    // Check if we are recording (assuming SensorManager.shared tracks this state)
-                    // Since ConnectivityManager doesn't own the recording state, we might need to infer or just send a 'ready' signal.
-                    // Ideally, this should be hooked up to the actual state source.
-                    // For now, we simply acknowledge we are reachable.
-                    self.sendStatusToWatch(isRecording: false) // Default to false if we don't know better here, or let ViewModel trigger update
+                    // Handled by RecordViewModel to provide accurate state
                 }
             }
         }
     }
     
-    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) { }
+    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+        DispatchQueue.main.async {
+            self.isWatchConnected = session.isReachable
+        }
+    }
+    
     func sessionDidBecomeInactive(_ session: WCSession) { }
     func sessionDidDeactivate(_ session: WCSession) {
         session.activate()
     }
+    
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        DispatchQueue.main.async {
+            self.isWatchConnected = session.isReachable
+        }
+    }
 }
+
 

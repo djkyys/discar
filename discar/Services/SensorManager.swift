@@ -45,8 +45,18 @@ class SensorManager: NSObject, ObservableObject {
     private var barometerBuffer: [BarometerReading] = []
     private var gpsBuffer: [GPSReading] = []
     private var deviceMotionBuffer: [DeviceMotionReading] = []
-    private var headphoneMotionBuffer: [DeviceMotionReading] = [] // Added (reuses DeviceMotionReading)
+    private var headphoneMotionBuffer: [DeviceMotionReading] = []
     private var headingBuffer: [HeadingReading] = []
+    private var gravityBuffer: [GravityReading] = []
+    private var orientationBuffer: [OrientationReading] = []
+
+    // Melbourne timezone formatter for datetime column
+    private let melbourneDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        formatter.timeZone = TimeZone(identifier: "Australia/Melbourne")
+        return formatter
+    }()
     
     private var currentSession: Session?
     
@@ -133,8 +143,10 @@ class SensorManager: NSObject, ObservableObject {
             motionManager.accelerometerUpdateInterval = hz
             motionManager.startAccelerometerUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
+                let ts = self.timestamp()
                 self.accelerometerBuffer.append(AccelerometerReading(
-                    t: self.timestamp(),
+                    time: ts.time,
+                    datetime: ts.datetime,
                     x: data.acceleration.x,
                     y: data.acceleration.y,
                     z: data.acceleration.z
@@ -147,8 +159,10 @@ class SensorManager: NSObject, ObservableObject {
             motionManager.gyroUpdateInterval = hz
             motionManager.startGyroUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
+                let ts = self.timestamp()
                 self.gyroscopeBuffer.append(GyroscopeReading(
-                    t: self.timestamp(),
+                    time: ts.time,
+                    datetime: ts.datetime,
                     x: data.rotationRate.x,
                     y: data.rotationRate.y,
                     z: data.rotationRate.z
@@ -161,8 +175,10 @@ class SensorManager: NSObject, ObservableObject {
             motionManager.magnetometerUpdateInterval = hz
             motionManager.startMagnetometerUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
+                let ts = self.timestamp()
                 self.magnetometerBuffer.append(MagnetometerReading(
-                    t: self.timestamp(),
+                    time: ts.time,
+                    datetime: ts.datetime,
                     x: data.magneticField.x,
                     y: data.magneticField.y,
                     z: data.magneticField.z
@@ -175,7 +191,28 @@ class SensorManager: NSObject, ObservableObject {
             motionManager.deviceMotionUpdateInterval = hz
             motionManager.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
-                self.deviceMotionBuffer.append(self.convertDeviceMotion(data))
+                let ts = self.timestamp()
+                self.deviceMotionBuffer.append(self.convertDeviceMotion(data, ts: ts))
+
+                // Also populate gravity and orientation buffers
+                self.gravityBuffer.append(GravityReading(
+                    time: ts.time,
+                    datetime: ts.datetime,
+                    x: data.gravity.x,
+                    y: data.gravity.y,
+                    z: data.gravity.z
+                ))
+                self.orientationBuffer.append(OrientationReading(
+                    time: ts.time,
+                    datetime: ts.datetime,
+                    yaw: data.attitude.yaw,
+                    roll: data.attitude.roll,
+                    pitch: data.attitude.pitch,
+                    qx: data.attitude.quaternion.x,
+                    qy: data.attitude.quaternion.y,
+                    qz: data.attitude.quaternion.z,
+                    qw: data.attitude.quaternion.w
+                ))
             }
         }
         
@@ -183,7 +220,8 @@ class SensorManager: NSObject, ObservableObject {
         if headphoneManager.isDeviceMotionAvailable {
             headphoneManager.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
-                self.headphoneMotionBuffer.append(self.convertDeviceMotion(data))
+                let ts = self.timestamp()
+                self.headphoneMotionBuffer.append(self.convertDeviceMotion(data, ts: ts))
             }
         }
         
@@ -191,9 +229,12 @@ class SensorManager: NSObject, ObservableObject {
         if CMAltimeter.isRelativeAltitudeAvailable() {
             altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] data, _ in
                 guard let data = data, let self = self else { return }
+                let ts = self.timestamp()
                 self.barometerBuffer.append(BarometerReading(
-                    t: self.timestamp(),
-                    pressure: data.pressure.doubleValue
+                    time: ts.time,
+                    datetime: ts.datetime,
+                    pressure: data.pressure.doubleValue,
+                    relativeAltitude: data.relativeAltitude.doubleValue
                 ))
             }
         }
@@ -234,13 +275,47 @@ class SensorManager: NSObject, ObservableObject {
         }
     }
     
-    private func convertDeviceMotion(_ data: CMDeviceMotion) -> DeviceMotionReading {
-        DeviceMotionReading(
-            t: self.timestamp(),
+    private func convertDeviceMotion(_ data: CMDeviceMotion, ts: (time: Double, datetime: String)) -> DeviceMotionReading {
+        let q = data.attitude.quaternion
+        let rm = data.attitude.rotationMatrix
+        let mf = data.magneticField
+
+        // Convert calibration accuracy enum to int: -1=uncalibrated, 0=low, 1=medium, 2=high
+        let calibratedMagField: CalibratedMagneticField? = {
+            let accuracy: Int
+            switch mf.accuracy {
+            case .uncalibrated: accuracy = -1
+            case .low: accuracy = 0
+            case .medium: accuracy = 1
+            case .high: accuracy = 2
+            @unknown default: accuracy = -1
+            }
+            return CalibratedMagneticField(
+                x: mf.field.x,
+                y: mf.field.y,
+                z: mf.field.z,
+                accuracy: accuracy
+            )
+        }()
+
+        return DeviceMotionReading(
+            time: ts.time,
+            datetime: ts.datetime,
             attitude: Attitude(
                 roll: data.attitude.roll,
                 pitch: data.attitude.pitch,
                 yaw: data.attitude.yaw
+            ),
+            quaternion: Quaternion(
+                x: q.x,
+                y: q.y,
+                z: q.z,
+                w: q.w
+            ),
+            rotationMatrix: RotationMatrix(
+                m11: rm.m11, m12: rm.m12, m13: rm.m13,
+                m21: rm.m21, m22: rm.m22, m23: rm.m23,
+                m31: rm.m31, m32: rm.m32, m33: rm.m33
             ),
             userAcceleration: Vector3(
                 x: data.userAcceleration.x,
@@ -256,13 +331,17 @@ class SensorManager: NSObject, ObservableObject {
                 x: data.rotationRate.x,
                 y: data.rotationRate.y,
                 z: data.rotationRate.z
-            )
+            ),
+            magneticField: calibratedMagField,
+            heading: data.heading >= 0 ? data.heading : nil
         )
     }
     
-    private func timestamp() -> Double {
-        guard let start = startTime else { return 0 }
-        return Date().timeIntervalSince(start)
+    private func timestamp() -> (time: Double, datetime: String) {
+        let now = Date()
+        guard let start = startTime else { return (0, melbourneDateFormatter.string(from: now)) }
+        let elapsed = now.timeIntervalSince(start)
+        return (elapsed, melbourneDateFormatter.string(from: now))
     }
     
     private func clearBuffers() {
@@ -272,23 +351,27 @@ class SensorManager: NSObject, ObservableObject {
         barometerBuffer.removeAll()
         gpsBuffer.removeAll()
         deviceMotionBuffer.removeAll()
-        headphoneMotionBuffer.removeAll() // Added
+        headphoneMotionBuffer.removeAll()
         headingBuffer.removeAll()
+        gravityBuffer.removeAll()
+        orientationBuffer.removeAll()
     }
     
     private func flushBuffers() async {
         guard let session = currentSession else { return }
         let storage = StorageService.shared
-        
-        await storage.appendSensorData(session: session, filename: "accelerometer.json", data: accelerometerBuffer)
-        await storage.appendSensorData(session: session, filename: "gyroscope.json", data: gyroscopeBuffer)
-        await storage.appendSensorData(session: session, filename: "magnetometer.json", data: magnetometerBuffer)
-        await storage.appendSensorData(session: session, filename: "barometer.json", data: barometerBuffer)
-        await storage.appendSensorData(session: session, filename: "gps.json", data: gpsBuffer)
-        await storage.appendSensorData(session: session, filename: "devicemotion.json", data: deviceMotionBuffer)
-        await storage.appendSensorData(session: session, filename: "headphonemotion.json", data: headphoneMotionBuffer) // Added
-        await storage.appendSensorData(session: session, filename: "heading.json", data: headingBuffer)
-        
+
+        await storage.appendCSVData(session: session, filename: "accelerometer.csv", data: accelerometerBuffer)
+        await storage.appendCSVData(session: session, filename: "gyroscope.csv", data: gyroscopeBuffer)
+        await storage.appendCSVData(session: session, filename: "magnetometer.csv", data: magnetometerBuffer)
+        await storage.appendCSVData(session: session, filename: "barometer.csv", data: barometerBuffer)
+        await storage.appendCSVData(session: session, filename: "gps.csv", data: gpsBuffer)
+        await storage.appendCSVData(session: session, filename: "devicemotion.csv", data: deviceMotionBuffer)
+        await storage.appendCSVData(session: session, filename: "headphonemotion.csv", data: headphoneMotionBuffer)
+        await storage.appendCSVData(session: session, filename: "heading.csv", data: headingBuffer)
+        await storage.appendCSVData(session: session, filename: "gravity.csv", data: gravityBuffer)
+        await storage.appendCSVData(session: session, filename: "orientation.csv", data: orientationBuffer)
+
         clearBuffers()
     }
     
@@ -298,14 +381,16 @@ class SensorManager: NSObject, ObservableObject {
             date: ISO8601DateFormatter().string(from: session.date),
             duration: currentDuration,
             sensorFiles: [
-                "accelerometer.json",
-                "gyroscope.json",
-                "magnetometer.json",
-                "barometer.json",
-                "gps.json",
-                "devicemotion.json",
-                "headphonemotion.json", // Added
-                "heading.json"
+                "accelerometer.csv",
+                "gyroscope.csv",
+                "magnetometer.csv",
+                "barometer.csv",
+                "gps.csv",
+                "devicemotion.csv",
+                "headphonemotion.csv",
+                "heading.csv",
+                "gravity.csv",
+                "orientation.csv"
             ]
         )
         
@@ -325,25 +410,36 @@ extension SensorManager: CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last, isRecording else { return }
+        let ts = timestamp()
         gpsBuffer.append(GPSReading(
-            t: timestamp(),
+            time: ts.time,
+            datetime: ts.datetime,
             lat: location.coordinate.latitude,
             lon: location.coordinate.longitude,
             altitude: location.altitude,
+            ellipsoidalAltitude: location.ellipsoidalAltitude,
             speed: location.speed,
+            speedAccuracy: location.speedAccuracy >= 0 ? location.speedAccuracy : nil,
             course: location.course,
+            courseAccuracy: location.courseAccuracy >= 0 ? location.courseAccuracy : nil,
             horizontalAccuracy: location.horizontalAccuracy,
-            verticalAccuracy: location.verticalAccuracy
+            verticalAccuracy: location.verticalAccuracy,
+            floor: location.floor?.level
         ))
     }
-    
+
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard isRecording else { return }
+        let ts = timestamp()
         headingBuffer.append(HeadingReading(
-            t: timestamp(),
+            time: ts.time,
+            datetime: ts.datetime,
             magneticHeading: newHeading.magneticHeading,
             trueHeading: newHeading.trueHeading >= 0 ? newHeading.trueHeading : nil,
-            accuracy: newHeading.headingAccuracy
+            accuracy: newHeading.headingAccuracy,
+            x: newHeading.x,
+            y: newHeading.y,
+            z: newHeading.z
         ))
     }
     

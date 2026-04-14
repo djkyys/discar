@@ -98,7 +98,7 @@ struct SessionRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(viewModel.formatDate(session.date))
                     .font(.headline)
-                Text(String(session.id.uuidString.prefix(8)))
+                Text(String((session.externalUUID ?? session.id.uuidString).prefix(6)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fontDesign(.monospaced)

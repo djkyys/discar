@@ -31,24 +31,51 @@ struct OBDStartResponse: Codable {
 
 class OBDService: ObservableObject {
     static let shared = OBDService()
-    
+
     @Published var connectionState: OBDConnectionState = .disconnected
     @Published var isCarConnected: Bool = false
     @Published var samplesCollected: Int = 0
-    
-    private let baseURL = "http://raspberrypi.local:8001"
+
+    var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "obdEnabled")
+    }
+
+    private var controllerIP: String {
+        UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
+    }
+
+    private var baseURL: String {
+        "http://\(controllerIP):8001"
+    }
+
     private var statusTimer: Timer?
-    
+
     private init() {
-        startStatusCheck()
+        if isEnabled {
+            startStatusCheck()
+        }
     }
     
     deinit {
         stopStatusCheck()
     }
-    
+
+    // MARK: - Enable/Disable
+
+    func setEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "obdEnabled")
+        if enabled {
+            startStatusCheck()
+        } else {
+            stopStatusCheck()
+            connectionState = .disconnected
+            isCarConnected = false
+            samplesCollected = 0
+        }
+    }
+
     // MARK: - Status Polling
-    
+
     func startStatusCheck() {
         // Poll every 10 seconds to check connectivity (Reduced frequency)
         statusTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in

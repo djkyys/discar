@@ -39,45 +39,46 @@ actor StorageService {
         }
     }
     
-    // MARK: - Optimized Writing (NDJSON)
-    
-    // Append sensor data to file using Append-Only Log (NDJSON)
-    func appendSensorData<T: Codable>(session: Session, filename: String, data: [T]) {
+    // MARK: - CSV Writing
+
+    // Append sensor data to CSV file
+    func appendCSVData<T: CSVConvertible>(session: Session, filename: String, data: [T]) {
         guard !data.isEmpty else { return }
-        
+
         let folder = getSessionFolder(session: session)
         let fileURL = folder.appendingPathComponent(filename)
-        
-        // 1. Ensure file exists
-        if !FileManager.default.fileExists(atPath: fileURL.path) {
+
+        // Check if file exists to determine if we need header
+        let fileExists = FileManager.default.fileExists(atPath: fileURL.path)
+
+        // Create file if needed
+        if !fileExists {
             FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         }
-        
+
         do {
-            // 2. Open FileHandle for writing
             let fileHandle = try FileHandle(forWritingTo: fileURL)
             defer { try? fileHandle.close() }
-            
-            // 3. Seek to end (O(1) append)
+
             fileHandle.seekToEndOfFile()
-            
-            let encoder = JSONEncoder()
-            // Note: No .prettyPrinted for NDJSON, we want single line per object
-            encoder.outputFormatting = .sortedKeys
-            
-            // 4. Encode each item as a separate line
-            for item in data {
-                let jsonData = try encoder.encode(item)
-                // Append newline delimiter
-                if let jsonString = String(data: jsonData, encoding: .utf8),
-                   let lineData = "\(jsonString)\n".data(using: .utf8) {
-                    fileHandle.write(lineData)
+
+            // Write header if new file
+            if !fileExists {
+                if let headerData = "\(T.csvHeader)\n".data(using: .utf8) {
+                    fileHandle.write(headerData)
                 }
             }
-            
-            logger.debug("Appended \(data.count) items to \(filename)")
+
+            // Write rows
+            for item in data {
+                if let rowData = "\(item.csvRow)\n".data(using: .utf8) {
+                    fileHandle.write(rowData)
+                }
+            }
+
+            logger.debug("Appended \(data.count) CSV rows to \(filename)")
         } catch {
-            logger.error("Failed to append to \(filename): \(error.localizedDescription)")
+            logger.error("Failed to append CSV to \(filename): \(error.localizedDescription)")
         }
     }
     
@@ -97,7 +98,7 @@ actor StorageService {
     // Delete session
     func deleteSession(session: Session) throws {
         let folder = getSessionFolder(session: session)
-        
+
         do {
             try FileManager.default.removeItem(at: folder)
             logger.info("Deleted session folder: \(session.folderPath)")
@@ -107,18 +108,99 @@ actor StorageService {
         }
     }
 
+    // MARK: - Sync Upload
+
+    /// Upload session data to ctlr
+    func uploadSession(session: Session) async throws -> Int {
+        let folder = getSessionFolder(session: session)
+
+        // Get UUID - prefer ctlr UUID, fallback to local
+        let uuid = session.externalUUID ?? session.id.uuidString
+
+        // Get controller IP
+        let controllerIP = UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
+        guard let url = URL(string: "http://\(controllerIP):8000/api/sync/phone") else {
+            throw StorageError.syncFailed("Invalid URL")
+        }
+
+        // Get all CSV files
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
+            throw StorageError.syncFailed("Cannot read session folder")
+        }
+
+        let csvFiles = files.filter { $0.pathExtension == "csv" || $0.lastPathComponent == "metadata.json" }
+        if csvFiles.isEmpty {
+            throw StorageError.syncFailed("No files to upload")
+        }
+
+        // Build multipart request
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120
+
+        var body = Data()
+
+        // Add UUID field
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"uuid\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(uuid)\r\n".data(using: .utf8)!)
+
+        // Add files
+        for fileURL in csvFiles {
+            guard let fileData = try? Data(contentsOf: fileURL) else { continue }
+            let filename = fileURL.lastPathComponent
+
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        // Send request
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw StorageError.syncFailed("Server error")
+        }
+
+        // Parse response
+        struct SyncResponse: Codable {
+            let success: Bool
+            let files_saved: Int
+        }
+
+        let syncResponse = try JSONDecoder().decode(SyncResponse.self, from: data)
+        logger.info("Synced \(syncResponse.files_saved) files for session \(uuid)")
+
+        return syncResponse.files_saved
+    }
+
     // MARK: - Data Loading Methods (Backward Compatible)
-    
+
     /// Get count of data points
     func getSensorDataCount(session: Session, filename: String) async -> Int {
         let url = getSessionFolder(session: session).appendingPathComponent(filename)
-        
+
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url) else {
             return 0
         }
-        
-        // Check format based on first character
+
+        // CSV format: count lines minus header
+        if filename.hasSuffix(".csv") {
+            let string = String(data: data, encoding: .utf8) ?? ""
+            let lines = string.components(separatedBy: .newlines).filter { !$0.isEmpty }
+            return max(0, lines.count - 1)  // Subtract header
+        }
+
+        // Check format based on first character (legacy JSON/NDJSON)
         if data.first == UInt8(ascii: "[") {
             // Legacy: JSON Array
             do {
@@ -128,9 +210,7 @@ actor StorageService {
                 return 0
             }
         } else {
-            // Modern: NDJSON (Count newlines)
-            // Reading entire file to string is okay for counting up to ~100MB, 
-            // ideally we'd stream count, but this is sufficient for now.
+            // NDJSON (Count newlines)
             let string = String(data: data, encoding: .utf8) ?? ""
             return string.components(separatedBy: .newlines).filter { !$0.isEmpty }.count
         }
@@ -218,7 +298,8 @@ enum StorageError: LocalizedError {
     case folderCreationFailed(Error)
     case deletionFailed(Error)
     case dataLoadFailed(Error)
-    
+    case syncFailed(String)
+
     var errorDescription: String? {
         switch self {
         case .folderCreationFailed(let error):
@@ -227,6 +308,8 @@ enum StorageError: LocalizedError {
             return "Failed to delete session: \(error.localizedDescription)"
         case .dataLoadFailed(let error):
             return "Failed to load data: \(error.localizedDescription)"
+        case .syncFailed(let reason):
+            return "Sync failed: \(reason)"
         }
     }
 }

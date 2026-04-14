@@ -79,6 +79,18 @@ class SensorDataViewModel: ObservableObject {
                     throw DataError.fileNotFound
                 }
                 processHeadingData(data)
+
+            case .gravity:
+                guard let data: [GravityReading] = await storage.loadSensorData(session: session, filename: filename) else {
+                    throw DataError.fileNotFound
+                }
+                processGravityData(data)
+
+            case .orientation:
+                guard let data: [OrientationReading] = await storage.loadSensorData(session: session, filename: filename) else {
+                    throw DataError.fileNotFound
+                }
+                processOrientationData(data)
             }
             
             isLoading = false
@@ -94,107 +106,107 @@ class SensorDataViewModel: ObservableObject {
     private func processAccelerometerData(_ data: [AccelerometerReading]) {
         // Statistics
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         // Chart data (downsample to 100 points)
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
             ChartDataPoint(
-                time: data[i].t,
+                time: data[i].time,
                 x: data[i].x,
                 y: data[i].y,
                 z: data[i].z
             )
         }
-        
+
         // Raw data preview (first 20)
         rawDataPreview = data.prefix(20).map { reading in
-            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.t, reading.x, reading.y, reading.z)
+            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.time, reading.x, reading.y, reading.z)
         }
     }
     
     private func processGyroscopeData(_ data: [GyroscopeReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
-            ChartDataPoint(time: data[i].t, x: data[i].x, y: data[i].y, z: data[i].z)
+            ChartDataPoint(time: data[i].time, x: data[i].x, y: data[i].y, z: data[i].z)
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
-            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.t, reading.x, reading.y, reading.z)
+            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.time, reading.x, reading.y, reading.z)
         }
     }
     
     private func processMagnetometerData(_ data: [MagnetometerReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
-            ChartDataPoint(time: data[i].t, x: data[i].x, y: data[i].y, z: data[i].z)
+            ChartDataPoint(time: data[i].time, x: data[i].x, y: data[i].y, z: data[i].z)
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
-            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.t, reading.x, reading.y, reading.z)
+            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.time, reading.x, reading.y, reading.z)
         }
     }
     
     private func processBarometerData(_ data: [BarometerReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
-            ChartDataPoint(time: data[i].t, x: data[i].pressure, y: nil, z: nil)
+            ChartDataPoint(time: data[i].time, x: data[i].pressure, y: nil, z: nil)
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
-            String(format: "t: %.2f | pressure: %.2f kPa", reading.t, reading.pressure)
+            String(format: "t: %.2f | pressure: %.2f kPa", reading.time, reading.pressure)
         }
     }
     
     private func processGPSData(_ data: [GPSReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         // Show altitude, speed, and horizontal accuracy
         chartData = stride(from: 0, to: data.count, by: step).map { i in
-            ChartDataPoint(time: data[i].t, x: data[i].altitude, y: data[i].speed, z: data[i].horizontalAccuracy)
+            ChartDataPoint(time: data[i].time, x: data[i].altitude, y: data[i].speed, z: data[i].horizontalAccuracy)
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
             String(format: "t: %.2fs\n  Lat: %.6f°, Lon: %.6f°\n  Alt: %.1fm, Speed: %.1fm/s, Course: %.1f°\n  H.Acc: %.1fm, V.Acc: %.1fm",
-                   reading.t, reading.lat, reading.lon, reading.altitude,
+                   reading.time, reading.lat, reading.lon, reading.altitude,
                    reading.speed, reading.course, reading.horizontalAccuracy, reading.verticalAccuracy)
         }
     }
     
     private func processDeviceMotionData(_ data: [DeviceMotionReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
             ChartDataPoint(
-                time: data[i].t,
+                time: data[i].time,
                 x: data[i].attitude.roll,
                 y: data[i].attitude.pitch,
                 z: data[i].attitude.yaw
             )
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
             String(format: "t: %.2fs\n  Attitude: Roll=%.3f, Pitch=%.3f, Yaw=%.3f\n  UserAccel: x=%.3f, y=%.3f, z=%.3f\n  Gravity: x=%.3f, y=%.3f, z=%.3f\n  RotRate: x=%.3f, y=%.3f, z=%.3f",
-                   reading.t,
+                   reading.time,
                    reading.attitude.roll, reading.attitude.pitch, reading.attitude.yaw,
                    reading.userAcceleration.x, reading.userAcceleration.y, reading.userAcceleration.z,
                    reading.gravity.x, reading.gravity.y, reading.gravity.z,
@@ -204,17 +216,47 @@ class SensorDataViewModel: ObservableObject {
     
     private func processHeadingData(_ data: [HeadingReading]) {
         statistics.count = data.count
-        statistics.duration = data.last?.t ?? 0
+        statistics.duration = data.last?.time ?? 0
         statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
-        
+
         let step = max(1, data.count / 100)
         chartData = stride(from: 0, to: data.count, by: step).map { i in
-            ChartDataPoint(time: data[i].t, x: data[i].magneticHeading, y: data[i].trueHeading, z: nil)
+            ChartDataPoint(time: data[i].time, x: data[i].magneticHeading, y: data[i].trueHeading, z: nil)
         }
-        
+
         rawDataPreview = data.prefix(20).map { reading in
             let trueStr = reading.trueHeading.map { String(format: "%.1f°", $0) } ?? "N/A"
-            return String(format: "t: %.2f | mag: %.1f° | true: %@", reading.t, reading.magneticHeading, trueStr)
+            return String(format: "t: %.2f | mag: %.1f° | true: %@", reading.time, reading.magneticHeading, trueStr)
+        }
+    }
+
+    private func processGravityData(_ data: [GravityReading]) {
+        statistics.count = data.count
+        statistics.duration = data.last?.time ?? 0
+        statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
+
+        let step = max(1, data.count / 100)
+        chartData = stride(from: 0, to: data.count, by: step).map { i in
+            ChartDataPoint(time: data[i].time, x: data[i].x, y: data[i].y, z: data[i].z)
+        }
+
+        rawDataPreview = data.prefix(20).map { reading in
+            String(format: "t: %.2f | x: %.3f | y: %.3f | z: %.3f", reading.time, reading.x, reading.y, reading.z)
+        }
+    }
+
+    private func processOrientationData(_ data: [OrientationReading]) {
+        statistics.count = data.count
+        statistics.duration = data.last?.time ?? 0
+        statistics.frequency = statistics.duration > 0 ? Double(data.count) / statistics.duration : 0
+
+        let step = max(1, data.count / 100)
+        chartData = stride(from: 0, to: data.count, by: step).map { i in
+            ChartDataPoint(time: data[i].time, x: data[i].yaw, y: data[i].roll, z: data[i].pitch)
+        }
+
+        rawDataPreview = data.prefix(20).map { reading in
+            String(format: "t: %.2f | yaw: %.3f | roll: %.3f | pitch: %.3f", reading.time, reading.yaw, reading.roll, reading.pitch)
         }
     }
 }

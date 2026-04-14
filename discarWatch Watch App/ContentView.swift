@@ -63,9 +63,12 @@ struct ContentView: View {
                     
                     // Stop Button
                     Button(action: {
+                         // Send Stop Command to Phone
+                        connectionManager.sendStopCommand()
+                        
+                        // Optionally stop locally immediately to ensure data is saved even if phone is unreachable
                         Task {
                             await sensorManager.stopRecording()
-                            connectionManager.sendStopCommand()
                         }
                     }) {
                         Image(systemName: "stop.fill")
@@ -84,10 +87,9 @@ struct ContentView: View {
                     
                     // Start Button
                     Button(action: {
-                        Task {
-                            await sensorManager.startRecording()
-                            connectionManager.sendStartCommand()
-                        }
+                        // Only send the command. Do NOT start local recording yet.
+                        // We wait for the Phone to confirm "isRecording: true" and provide a Session ID.
+                        connectionManager.sendStartCommand()
                     }) {
                         Text("Start")
                             .font(.headline)

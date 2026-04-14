@@ -13,7 +13,9 @@ enum SensorType: String, CaseIterable {
     case gps
     case deviceMotion
     case heading
-    case headphoneMotion // Added
+    case headphoneMotion
+    case gravity
+    case orientation
 
     var displayName: String {
         switch self {
@@ -24,20 +26,24 @@ enum SensorType: String, CaseIterable {
         case .gps: return "GPS"
         case .deviceMotion: return "Device Motion"
         case .heading: return "Heading (Compass)"
-        case .headphoneMotion: return "AirPods Motion" // Added
+        case .headphoneMotion: return "AirPods Motion"
+        case .gravity: return "Gravity"
+        case .orientation: return "Orientation"
         }
     }
 
     var filename: String {
         switch self {
-        case .accelerometer: return "accelerometer.json"
-        case .gyroscope: return "gyroscope.json"
-        case .magnetometer: return "magnetometer.json"
-        case .barometer: return "barometer.json"
-        case .gps: return "gps.json"
-        case .deviceMotion: return "devicemotion.json"
-        case .heading: return "heading.json"
-        case .headphoneMotion: return "headphonemotion.json" // Added
+        case .accelerometer: return "accelerometer.csv"
+        case .gyroscope: return "gyroscope.csv"
+        case .magnetometer: return "magnetometer.csv"
+        case .barometer: return "barometer.csv"
+        case .gps: return "gps.csv"
+        case .deviceMotion: return "devicemotion.csv"
+        case .heading: return "heading.csv"
+        case .headphoneMotion: return "headphonemotion.csv"
+        case .gravity: return "gravity.csv"
+        case .orientation: return "orientation.csv"
         }
     }
 }

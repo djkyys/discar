@@ -14,13 +14,7 @@ import os.log
 // Define an Actor for thread-safe data buffering
 actor DataBuffer {
     var heartRateBuffer: [WatchHeartRateReading] = []
-    var accelerometerBuffer: [WatchAccelerometerReading] = []
-    var gyroscopeBuffer: [WatchGyroscopeReading] = []
-    
-    // NEW BUFFERS
-    var ecgBuffer: [WatchECGReading] = []
-    var spo2Buffer: [WatchBloodOxygenReading] = []
-    var temperatureBuffer: [WatchTemperatureReading] = []
+    var deviceMotionBuffer: [WatchDeviceMotionReading] = []
     var compassBuffer: [WatchCompassReading] = []
     var barometerBuffer: [WatchBarometerReading] = []
     
@@ -28,24 +22,8 @@ actor DataBuffer {
         heartRateBuffer.append(reading)
     }
     
-    func appendAccelerometer(_ reading: WatchAccelerometerReading) {
-        accelerometerBuffer.append(reading)
-    }
-    
-    func appendGyroscope(_ reading: WatchGyroscopeReading) {
-        gyroscopeBuffer.append(reading)
-    }
-    
-    func appendECG(_ reading: WatchECGReading) {
-        ecgBuffer.append(reading)
-    }
-    
-    func appendSPO2(_ reading: WatchBloodOxygenReading) {
-        spo2Buffer.append(reading)
-    }
-    
-    func appendTemperature(_ reading: WatchTemperatureReading) {
-        temperatureBuffer.append(reading)
+    func appendDeviceMotion(_ reading: WatchDeviceMotionReading) {
+        deviceMotionBuffer.append(reading)
     }
 
     func appendCompass(_ reading: WatchCompassReading) {
@@ -57,29 +35,20 @@ actor DataBuffer {
     }
     
     func flush() -> (
-        [WatchHeartRateReading], [WatchAccelerometerReading], [WatchGyroscopeReading],
-        [WatchECGReading], [WatchBloodOxygenReading], [WatchTemperatureReading],
+        [WatchHeartRateReading], [WatchDeviceMotionReading],
         [WatchCompassReading], [WatchBarometerReading]
     ) {
         let hr = heartRateBuffer
-        let acc = accelerometerBuffer
-        let gyro = gyroscopeBuffer
-        let ecg = ecgBuffer
-        let spo2 = spo2Buffer
-        let temp = temperatureBuffer
+        let motion = deviceMotionBuffer
         let comp = compassBuffer
         let baro = barometerBuffer
         
         heartRateBuffer.removeAll()
-        accelerometerBuffer.removeAll()
-        gyroscopeBuffer.removeAll()
-        ecgBuffer.removeAll()
-        spo2Buffer.removeAll()
-        temperatureBuffer.removeAll()
+        deviceMotionBuffer.removeAll()
         compassBuffer.removeAll()
         barometerBuffer.removeAll()
         
-        return (hr, acc, gyro, ecg, spo2, temp, comp, baro)
+        return (hr, motion, comp, baro)
     }
 }
 
@@ -108,81 +77,174 @@ class WatchSensorManager: NSObject, ObservableObject {
     // MARK: - State
     private var startDate: Date?
     private var timer: Timer?
-    private var sessionID: String? // Changed to String to match incoming format
+    private var sessionID: String?
+    
+    // Persistence Keys
+    private let kIsRecording = "isRecording"
+    private let kSessionID = "sessionID"
+    private let kStartDate = "startDate"
     
     // MARK: - Buffers
     private let dataBuffer = DataBuffer()
     
     override init() {
         super.init()
+        logger.info("🔧 WatchSensorManager.init() called")
         queue.maxConcurrentOperationCount = 1
         queue.name = "com.discar.watch.motion"
         locationManager.delegate = self
+        
+        // Restore State if app was killed
+        restoreState()
+    }
+    
+    // MARK: - Persistence Logic
+    
+    private func restoreState() {
+        let defaults = UserDefaults.standard
+        let wasRecording = defaults.bool(forKey: kIsRecording)
+        let savedID = defaults.string(forKey: kSessionID)
+        let savedDate = defaults.object(forKey: kStartDate) as? Date
+        
+        logger.info("🔄 restoreState() - wasRecording: \(wasRecording), savedID: \(savedID ?? "nil"), savedDate: \(savedDate?.description ?? "nil")")
+        
+        if wasRecording,
+           let id = savedID,
+           let date = savedDate {
+            
+            logger.info("🔄 Restoring previous session: \(id)")
+            
+            // Restore properties
+            self.sessionID = id
+            self.startDate = date
+            
+            // Resume Sensors (HealthKit might need re-auth, but we try)
+            Task {
+                await startRecording(sessionID: id, resume: true)
+            }
+        } else {
+            logger.info("🔄 No session to restore")
+        }
+    }
+    
+    private func saveState() {
+        logger.info("💾 saveState() - sessionID: \(self.sessionID ?? "nil")")
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: kIsRecording)
+        defaults.set(sessionID, forKey: kSessionID)
+        defaults.set(startDate, forKey: kStartDate)
+    }
+    
+    private func clearState() {
+        logger.info("🗑️ clearState()")
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: kIsRecording)
+        defaults.removeObject(forKey: kSessionID)
+        defaults.removeObject(forKey: kStartDate)
     }
     
     // MARK: - Public API
-    
+
+    /// Request HealthKit permissions - follows Apple's standard pattern exactly
     func requestPermissions() async {
         guard HKHealthStore.isHealthDataAvailable() else {
-            logger.error("HealthKit not available")
+            logger.error("HealthKit not available on this device")
             return
         }
-        
-        let typesToShare: Set = [
-            HKQuantityType.workoutType()
+
+        // Following Apple's documentation pattern exactly:
+        // Same types in both toShare and read for workout + heart rate
+        let allTypes: Set<HKSampleType> = [
+            HKQuantityType.workoutType(),
+            HKQuantityType(.heartRate)
         ]
-        
-        var typesToRead: Set<HKObjectType> = [
-            HKQuantityType.quantityType(forIdentifier: .heartRate)!,
-            HKObjectType.activitySummaryType(),
-            HKQuantityType.quantityType(forIdentifier: .oxygenSaturation)!, // SpO2
-            HKQuantityType.quantityType(forIdentifier: .bodyTemperature)!, // General body temp
-        ]
-        
-        // Note: HKElectrocardiogramType is available on watchOS 6.0+
-        // In modern SDKs, this function no longer returns an Optional type.
-        let ecgType = HKObjectType.electrocardiogramType()
-        typesToRead.insert(ecgType)
-        
+
         do {
-            try await healthStore.requestAuthorization(toShare: typesToShare, read: typesToRead)
-            logger.info("HealthKit authorization requested")
+            // Request authorization matching Apple's docs
+            try await healthStore.requestAuthorization(toShare: allTypes, read: allTypes)
+            logger.info("HealthKit authorization completed")
+
         } catch {
-            logger.error("HealthKit auth error: \(error.localizedDescription)")
+            logger.error("HealthKit authorization error: \(error.localizedDescription)")
         }
-        
-        // Location Permission for Compass
+
+        // Location Permission for Compass (separate from HealthKit)
         if locationManager.authorizationStatus == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
+            logger.info("Location permission requested")
         }
     }
     
-    // Modified signature to accept sessionID from Phone
-    func startRecording(sessionID: String? = nil) async {
-        guard !isRecording else { return }
+    // Modified signature to accept sessionID from Phone and resume flag
+    func startRecording(sessionID: String? = nil, resume: Bool = false) async {
+        logger.info("▶️ startRecording() called - sessionID: \(sessionID ?? "nil"), resume: \(resume), isRecording: \(self.isRecording)")
         
-        // Ensure permissions
-        await requestPermissions()
+        // Safety: If resume requested but session ID mismatch, stop previous one
+        if resume && sessionID != nil && self.sessionID != nil && sessionID != self.sessionID {
+            logger.warning("⚠️ Session ID mismatch during resume (\(sessionID!) != \(self.sessionID!)). Stopping old session.")
+            await stopRecording()
+        }
         
+        guard !self.isRecording || resume else {
+            logger.info("▶️ startRecording() - SKIPPED (already recording and not resuming)")
+            return
+        }
+
+        // Check workout WRITE permission status
+        let workoutType = HKQuantityType.workoutType()
+        let workoutStatus = healthStore.authorizationStatus(for: workoutType)
+
+        logger.info("▶️ Workout write permission status: \(workoutStatus.rawValue)")
+
+        // If permission is undetermined, request it
+        if workoutStatus == .notDetermined {
+            logger.info("Requesting HealthKit permissions...")
+            await requestPermissions()
+
+            // Re-check after request
+            let newWorkoutStatus = healthStore.authorizationStatus(for: workoutType)
+            if newWorkoutStatus != .sharingAuthorized {
+                logger.error("Workout permission not granted")
+                return
+            }
+        }
+        // If already denied, we cannot proceed with workout sessions
+        else if workoutStatus == .sharingDenied {
+            logger.error("Workout permission denied - please enable in Settings > Health > discarWatch")
+            return
+        }
+
         // Setup Workout Session
         do {
             let configuration = HKWorkoutConfiguration()
             configuration.activityType = .other
             configuration.locationType = .outdoor
-            
+
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             builder = workoutSession?.associatedWorkoutBuilder()
-            
+
             workoutSession?.delegate = self
             builder?.delegate = self
-            
-            builder?.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
+
+            // Create data source and EXPLICITLY enable heart rate collection
+            let dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
+            dataSource.enableCollection(for: HKQuantityType(.heartRate), predicate: nil)
+            builder?.dataSource = dataSource
+
+            logger.info("Heart rate collection explicitly enabled")
             
             // Start Session
-            let date = Date()
-            startDate = date
-            // Use provided sessionID or generate new one (fallback)
-            self.sessionID = sessionID ?? UUID().uuidString
+            // If resuming, use existing startDate, else create new
+            let date = resume ? (self.startDate ?? Date()) : Date()
+            
+            if !resume {
+                startDate = date
+                // Use provided sessionID or generate new one (fallback)
+                self.sessionID = sessionID ?? UUID().uuidString
+                
+                // Save State immediately
+                saveState()
+            }
             
             workoutSession?.startActivity(with: date)
             
@@ -197,7 +259,8 @@ class WatchSensorManager: NSObject, ObservableObject {
                     Task { @MainActor in
                         self.isRecording = true
                         self.startTimer()
-                        self.logger.info("Recording started with Session ID: \(self.sessionID ?? "unknown")")
+                        let action = resume ? "Resumed" : "Started"
+                        self.logger.info("Recording \(action) with Session ID: \(self.sessionID ?? "unknown")")
                     }
                 } else {
                     self.logger.error("Failed to begin collection: \(error?.localizedDescription ?? "unknown error")")
@@ -206,13 +269,17 @@ class WatchSensorManager: NSObject, ObservableObject {
             }
             
         } catch {
-            // This catch block will now handle any errors from beginCollection or setup
             logger.error("Failed to start workout session or begin collection: \(error.localizedDescription)")
         }
     }
     
     func stopRecording() async {
-        guard isRecording else { return }
+        logger.info("⏹️ stopRecording() called - isRecording: \(self.isRecording)")
+        
+        guard self.isRecording else {
+            logger.info("⏹️ stopRecording() - SKIPPED (not recording)")
+            return
+        }
         
         let date = Date()
         
@@ -232,23 +299,18 @@ class WatchSensorManager: NSObject, ObservableObject {
                     if let workout = workout {
                         self.logger.info("Workout saved to HealthKit: \(workout)")
                         
-                        // Step 3: Once the workout is completely saved, perform final cleanup
-                        // Use a Task to execute the cleanup (including the async flushData())
                         Task {
                             await self.flushAndResetState()
                         }
                     } else {
                         self.logger.error("Failed to finish workout: \(finishError?.localizedDescription ?? "unknown error")")
-                        // Still proceed with cleanup even if finishing failed
                         Task {
                             await self.flushAndResetState()
                         }
                     }
                 }
             } else {
-                // Handle failure to end collection
                 self.logger.error("Failed to end collection: \(error?.localizedDescription ?? "unknown error")")
-                // Proceed to finish/cleanup anyway
                 self.builder?.finishWorkout { (workout, _) in
                     Task {
                         await self.flushAndResetState()
@@ -260,7 +322,7 @@ class WatchSensorManager: NSObject, ObservableObject {
     
     // MARK: - State Management Helper
     
-    @MainActor // Ensure state resets happen on the main thread
+    @MainActor
     private func flushAndResetState() async {
         // Flush data
         await flushData()
@@ -276,32 +338,26 @@ class WatchSensorManager: NSObject, ObservableObject {
         currentDuration = 0
         
         logger.info("Recording stopped and state reset.")
+        
+        // Clear Persisted State
+        clearState()
     }
     
     // MARK: - Sensor Handling
     
     private func startSensors() {
-        // 1. Motion (Accelerometer & Gyroscope)
-        if motionManager.isAccelerometerAvailable {
-            motionManager.accelerometerUpdateInterval = 1.0 / 50.0 // 50Hz
-            // FIX: Corrected to use the modern start...Updates(to:withHandler:) signature
-            motionManager.startAccelerometerUpdates(to: queue) { [weak self] data, error in
+        // 1. Device Motion (Fused: Accelerometer + Gyroscope + Magnetometer)
+        // Provides: Attitude (pitch/roll/yaw), UserAcceleration, Gravity, RotationRate
+        if motionManager.isDeviceMotionAvailable {
+            motionManager.deviceMotionUpdateInterval = 1.0 / 2.0 // 2Hz (2 samples per second)
+            motionManager.startDeviceMotionUpdates(to: queue) { [weak self] data, error in
                 guard let self = self, let data = data, error == nil else { return }
                 Task {
-                    await self.recordAccelerometer(data)
+                    await self.recordDeviceMotion(data)
                 }
             }
-        }
-        
-        if motionManager.isGyroAvailable {
-            motionManager.gyroUpdateInterval = 1.0 / 50.0
-            // FIX: Corrected to use the modern start...Updates(to:withHandler:) signature
-            motionManager.startGyroUpdates(to: queue) { [weak self] data, error in
-                guard let self = self, let data = data, error == nil else { return }
-                Task {
-                    await self.recordGyroscope(data)
-                }
-            }
+        } else {
+            logger.warning("Device Motion not available on this device")
         }
         
         // 2. Barometer
@@ -310,8 +366,13 @@ class WatchSensorManager: NSObject, ObservableObject {
                 guard let self = self, let data = data, error == nil else { return }
                 let t = self.timestamp()
                 let pressure = data.pressure.doubleValue
+                let relAltitude = data.relativeAltitude.doubleValue
                 Task {
-                    await self.dataBuffer.appendBarometer(WatchBarometerReading(t: t, pressure: pressure))
+                    await self.dataBuffer.appendBarometer(WatchBarometerReading(
+                        t: t,
+                        pressure: pressure,
+                        relativeAltitude: relAltitude
+                    ))
                 }
             }
         }
@@ -321,20 +382,72 @@ class WatchSensorManager: NSObject, ObservableObject {
     }
     
     private func stopSensors() {
-        motionManager.stopAccelerometerUpdates()
-        motionManager.stopGyroUpdates()
+        motionManager.stopDeviceMotionUpdates()
         altimeter.stopRelativeAltitudeUpdates()
         locationManager.stopUpdatingHeading()
     }
     
-    private func recordAccelerometer(_ data: CMAccelerometerData) async {
+    private func recordDeviceMotion(_ data: CMDeviceMotion) async {
         let t = timestamp()
-        await dataBuffer.appendAccelerometer(WatchAccelerometerReading(t: t, x: data.acceleration.x, y: data.acceleration.y, z: data.acceleration.z))
-    }
-    
-    private func recordGyroscope(_ data: CMGyroData) async {
-        let t = timestamp()
-        await dataBuffer.appendGyroscope(WatchGyroscopeReading(t: t, x: data.rotationRate.x, y: data.rotationRate.y, z: data.rotationRate.z))
+        let q = data.attitude.quaternion
+        let rm = data.attitude.rotationMatrix
+        let mf = data.magneticField
+
+        // Convert calibration accuracy enum to int: -1=uncalibrated, 0=low, 1=medium, 2=high
+        let calibratedMagField: WatchCalibratedMagneticField? = {
+            let accuracy: Int
+            switch mf.accuracy {
+            case .uncalibrated: accuracy = -1
+            case .low: accuracy = 0
+            case .medium: accuracy = 1
+            case .high: accuracy = 2
+            @unknown default: accuracy = -1
+            }
+            return WatchCalibratedMagneticField(
+                x: mf.field.x,
+                y: mf.field.y,
+                z: mf.field.z,
+                accuracy: accuracy
+            )
+        }()
+
+        let reading = WatchDeviceMotionReading(
+            t: t,
+            attitude: WatchAttitude(
+                roll: data.attitude.roll,
+                pitch: data.attitude.pitch,
+                yaw: data.attitude.yaw
+            ),
+            quaternion: WatchQuaternion(
+                x: q.x,
+                y: q.y,
+                z: q.z,
+                w: q.w
+            ),
+            rotationMatrix: WatchRotationMatrix(
+                m11: rm.m11, m12: rm.m12, m13: rm.m13,
+                m21: rm.m21, m22: rm.m22, m23: rm.m23,
+                m31: rm.m31, m32: rm.m32, m33: rm.m33
+            ),
+            userAcceleration: WatchVector3(
+                x: data.userAcceleration.x,
+                y: data.userAcceleration.y,
+                z: data.userAcceleration.z
+            ),
+            gravity: WatchVector3(
+                x: data.gravity.x,
+                y: data.gravity.y,
+                z: data.gravity.z
+            ),
+            rotationRate: WatchVector3(
+                x: data.rotationRate.x,
+                y: data.rotationRate.y,
+                z: data.rotationRate.z
+            ),
+            magneticField: calibratedMagField,
+            heading: data.heading >= 0 ? data.heading : nil
+        )
+        await dataBuffer.appendDeviceMotion(reading)
     }
     
     // MARK: - Helpers
@@ -365,20 +478,16 @@ class WatchSensorManager: NSObject, ObservableObject {
         let fileManager = FileManager.default
         guard let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         
-        let sessionDir = docURL.appendingPathComponent(id) // id is now String
+        let sessionDir = docURL.appendingPathComponent(id)
         
         do {
             try fileManager.createDirectory(at: sessionDir, withIntermediateDirectories: true)
             
-            let (hrData, accData, gyroData, ecgData, spo2Data, tempData, compData, baroData) = await dataBuffer.flush()
+            let (hrData, motionData, compData, baroData) = await dataBuffer.flush()
             
             // Write JSONs
-            try writeJSON(accData, to: sessionDir.appendingPathComponent("accelerometer.json"))
-            try writeJSON(gyroData, to: sessionDir.appendingPathComponent("gyroscope.json"))
             try writeJSON(hrData, to: sessionDir.appendingPathComponent("heart_rate.json"))
-            try writeJSON(ecgData, to: sessionDir.appendingPathComponent("ecg.json"))
-            try writeJSON(spo2Data, to: sessionDir.appendingPathComponent("spo2.json"))
-            try writeJSON(tempData, to: sessionDir.appendingPathComponent("temperature.json"))
+            try writeJSON(motionData, to: sessionDir.appendingPathComponent("devicemotion.json"))
             try writeJSON(compData, to: sessionDir.appendingPathComponent("compass.json"))
             try writeJSON(baroData, to: sessionDir.appendingPathComponent("barometer.json"))
             
@@ -388,8 +497,7 @@ class WatchSensorManager: NSObject, ObservableObject {
                 date: ISO8601DateFormatter().string(from: start),
                 duration: currentDuration,
                 sensorFiles: [
-                    "accelerometer.json", "gyroscope.json", "heart_rate.json",
-                    "ecg.json", "spo2.json", "temperature.json", "compass.json", "barometer.json"
+                    "heart_rate.json", "devicemotion.json", "compass.json", "barometer.json"
                 ]
             )
             try writeJSON(meta, to: sessionDir.appendingPathComponent("metadata.json"))
@@ -413,10 +521,15 @@ class WatchSensorManager: NSObject, ObservableObject {
 
 extension WatchSensorManager: HKWorkoutSessionDelegate {
     func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState, from fromState: HKWorkoutSessionState, date: Date) {
-        logger.info("Workout session state changed: \(toState.rawValue)")
+        logger.info("🏋️ Workout state: \(fromState.rawValue) → \(toState.rawValue)")
         
-        DispatchQueue.main.async {
-            self.isRecording = (toState == .running)
+        // DON'T blindly set isRecording based on workout state!
+        // The workout can pause/resume without us wanting to stop the logical recording.
+        // We only reset state if the workout is explicitly ended.
+        if toState == .ended {
+            logger.warning("🏋️ Workout ended - cleaning up state if needed")
+            // If it ended and we thought we were recording, we might need to stop.
+            // But usually stopRecording() handles this.
         }
     }
     
@@ -429,41 +542,31 @@ extension WatchSensorManager: HKLiveWorkoutBuilderDelegate {
     func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {
         for type in collectedTypes {
             guard let quantityType = type as? HKQuantityType else { continue }
-            
+
+            // Debug Log
+            logger.info("Received HealthKit Data: \(quantityType.identifier)")
+
             let t = self.timestamp()
             let statistics = workoutBuilder.statistics(for: quantityType)
             guard let quantity = statistics?.mostRecentQuantity() else { continue }
 
-            switch quantityType.identifier {
-            case HKQuantityTypeIdentifier.heartRate.rawValue:
+            // Check if this is heart rate data using modern syntax
+            if quantityType == HKQuantityType(.heartRate) {
                 let bpm = quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
-                
+
+                logger.info("Heart rate received: \(bpm) BPM")
+
                 DispatchQueue.main.async {
                     self.currentHeartRate = bpm
                 }
-                
+
                 Task {
                     await self.dataBuffer.appendHeartRate(WatchHeartRateReading(t: t, bpm: bpm))
                 }
-                
-            case HKQuantityTypeIdentifier.oxygenSaturation.rawValue:
-                let spo2 = quantity.doubleValue(for: HKUnit.percent()) * 100
-                Task {
-                    await self.dataBuffer.appendSPO2(WatchBloodOxygenReading(t: t, percentage: spo2))
-                }
-                
-            case HKQuantityTypeIdentifier.basalBodyTemperature.rawValue:
-                let tempChange = quantity.doubleValue(for: HKUnit.degreeCelsius())
-                Task {
-                    await self.dataBuffer.appendTemperature(WatchTemperatureReading(t: t, delta: tempChange))
-                }
-                
-            default:
-                break
             }
         }
     }
-    
+
     func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {
     }
 }
@@ -474,12 +577,14 @@ extension WatchSensorManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard isRecording else { return }
         let t = timestamp()
-        
-        // Use magnetic heading by default, or true heading if available and calibrated
+
         let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-        
+        let accuracy = newHeading.headingAccuracy >= 0 ? newHeading.headingAccuracy : nil
+
         Task {
-            await dataBuffer.appendCompass(WatchCompassReading(t: t, heading: heading))
+            await dataBuffer.appendCompass(WatchCompassReading(t: t, heading: heading, accuracy: accuracy))
         }
     }
 }
+
+

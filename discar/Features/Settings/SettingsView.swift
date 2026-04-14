@@ -9,6 +9,7 @@ import CoreLocation
 
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
+    @StateObject private var httpServer = HTTPServerService.shared
     @EnvironmentObject var appState: AppState
     @AppStorage("isTestMode") private var isTestMode = false // New Storage
     @State private var showPrivacyPolicy = false
@@ -65,17 +66,131 @@ struct SettingsView: View {
                         )
                     }
                     
+                    // Controller Section
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Controller")
+                            .font(.headline)
+                            .padding(.horizontal)
+
+                        // Controller IP Input
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "server.rack")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 40)
+
+                                TextField("Controller IP", text: $viewModel.controllerIP)
+                                    .textFieldStyle(.roundedBorder)
+                                    .keyboardType(.decimalPad)
+                                    .autocorrectionDisabled()
+                            }
+
+                            // Connection Test Button
+                            Button(action: {
+                                Task { await viewModel.testConnection() }
+                            }) {
+                                HStack {
+                                    if viewModel.isTestingConnection {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "wifi")
+                                    }
+                                    Text("Test Connection")
+                                }
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color.blue)
+                                .cornerRadius(8)
+                            }
+                            .disabled(viewModel.isTestingConnection)
+
+                            // Connection Status
+                            if let status = viewModel.connectionStatus {
+                                HStack {
+                                    switch status {
+                                    case .success(let cameras):
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                        Text("Connected - \(cameras) camera(s) online")
+                                            .foregroundStyle(.green)
+                                    case .failed(let error):
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.red)
+                                        Text(error)
+                                            .foregroundStyle(.red)
+                                    }
+                                }
+                                .font(.caption)
+                                .padding(.leading, 48)
+                            }
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                    }
+
                     // Developer Section
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Developer")
                             .font(.headline)
                             .padding(.horizontal)
-                        
+
                         ToggleCard(
-                            title: "Test Mode (Skip Pi Check)",
+                            title: "Test Mode (Skip Pi & Watch Check)",
                             icon: "ant.circle",
                             isOn: $isTestMode
                         )
+
+                        // OBD Service Toggle
+                        ToggleCard(
+                            title: "OBD Service",
+                            icon: "car.fill",
+                            isOn: Binding(
+                                get: { OBDService.shared.isEnabled },
+                                set: { OBDService.shared.setEnabled($0) }
+                            )
+                        )
+
+                        // HTTP Server Toggle
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "network")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 40)
+
+                                Text("HTTP Data Server")
+                                    .font(.body)
+
+                                Spacer()
+
+                                Toggle("", isOn: Binding(
+                                    get: { httpServer.isRunning },
+                                    set: { newValue in
+                                        if newValue {
+                                            httpServer.start()
+                                        } else {
+                                            httpServer.stop()
+                                        }
+                                    }
+                                ))
+                            }
+
+                            if httpServer.isRunning {
+                                Text(httpServer.serverURL)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .padding(.leading, 48)
+                            }
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
                     }
                     
                     // Actions Section

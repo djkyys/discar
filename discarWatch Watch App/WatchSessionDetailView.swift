@@ -32,11 +32,9 @@ struct WatchSessionDetailView: View {
                 } else {
                     VStack(spacing: 8) {
                         statRow(title: "Heart Rate", count: sensorCounts["heart_rate.json"] ?? 0, icon: "heart.fill", color: .red)
-                        statRow(title: "Accelerometer", count: sensorCounts["accelerometer.json"] ?? 0, icon: "figure.walk", color: .blue)
-                        statRow(title: "Gyroscope", count: sensorCounts["gyroscope.json"] ?? 0, icon: "rotate.3d", color: .green)
-                        statRow(title: "GPS/Compass", count: sensorCounts["compass.json"] ?? 0, icon: "location.fill", color: .indigo)
-                        statRow(title: "SpO2", count: sensorCounts["spo2.json"] ?? 0, icon: "lungs.fill", color: .cyan)
-                        statRow(title: "Temperature", count: sensorCounts["temperature.json"] ?? 0, icon: "thermometer", color: .orange)
+                        statRow(title: "Device Motion", count: sensorCounts["devicemotion.json"] ?? 0, icon: "gyroscope", color: .blue)
+                        statRow(title: "Compass", count: sensorCounts["compass.json"] ?? 0, icon: "location.north.fill", color: .indigo)
+                        statRow(title: "Barometer", count: sensorCounts["barometer.json"] ?? 0, icon: "barometer", color: .cyan)
                     }
                 }
             }
@@ -82,11 +80,9 @@ struct WatchSessionDetailView: View {
             }
             
             counts["heart_rate.json"] = countFile("heart_rate.json")
-            counts["accelerometer.json"] = countFile("accelerometer.json")
-            counts["gyroscope.json"] = countFile("gyroscope.json")
+            counts["devicemotion.json"] = countFile("devicemotion.json")
             counts["compass.json"] = countFile("compass.json")
-            counts["spo2.json"] = countFile("spo2.json")
-            counts["temperature.json"] = countFile("temperature.json")
+            counts["barometer.json"] = countFile("barometer.json")
             
             await MainActor.run {
                 self.sensorCounts = counts
@@ -110,5 +106,3 @@ struct WatchSessionDetailView: View {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 }
-
-

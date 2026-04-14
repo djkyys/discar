@@ -7,52 +7,71 @@
 
 import Foundation
 
-// MARK: - Sensor Data Models
-// These mirror the phone models to ensure compatibility.
-// Ideally, SensorData.swift should be shared between targets.
+// MARK: - Basic Types
 
-struct WatchAccelerometerReading: Codable {
-    let t: Double
+struct WatchVector3: Codable {
     let x: Double
     let y: Double
     let z: Double
 }
 
-struct WatchGyroscopeReading: Codable {
-    let t: Double
+struct WatchQuaternion: Codable {
     let x: Double
     let y: Double
     let z: Double
+    let w: Double
 }
+
+struct WatchRotationMatrix: Codable {
+    let m11: Double, m12: Double, m13: Double
+    let m21: Double, m22: Double, m23: Double
+    let m31: Double, m32: Double, m33: Double
+}
+
+// MARK: - Fused Device Motion
+
+struct WatchDeviceMotionReading: Codable {
+    let t: Double
+    let attitude: WatchAttitude
+    let quaternion: WatchQuaternion
+    let rotationMatrix: WatchRotationMatrix
+    let userAcceleration: WatchVector3
+    let gravity: WatchVector3
+    let rotationRate: WatchVector3
+    let magneticField: WatchCalibratedMagneticField?
+    let heading: Double?
+}
+
+struct WatchAttitude: Codable {
+    let roll: Double
+    let pitch: Double
+    let yaw: Double
+}
+
+struct WatchCalibratedMagneticField: Codable {
+    let x: Double
+    let y: Double
+    let z: Double
+    let accuracy: Int  // -1=uncalibrated, 0=low, 1=medium, 2=high
+}
+
+// MARK: - Other Watch Sensors
 
 struct WatchHeartRateReading: Codable {
     let t: Double
     let bpm: Double
 }
 
-struct WatchECGReading: Codable {
-    let t: Double
-    let voltage: Double
-}
-
-struct WatchBloodOxygenReading: Codable {
-    let t: Double
-    let percentage: Double
-}
-
-struct WatchTemperatureReading: Codable {
-    let t: Double
-    let delta: Double
-}
-
 struct WatchCompassReading: Codable {
     let t: Double
     let heading: Double
+    let accuracy: Double?
 }
 
 struct WatchBarometerReading: Codable {
     let t: Double
     let pressure: Double
+    let relativeAltitude: Double?
 }
 
 struct WatchSessionMetadata: Codable {

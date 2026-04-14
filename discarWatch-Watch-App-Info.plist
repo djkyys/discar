@@ -4,5 +4,17 @@
 <dict>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>This app reads heart rate data to monitor driver alertness during driving sessions.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>This app saves workout sessions to track your driving activity in the Health app.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>This app uses motion sensors to detect driving patterns.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app uses location for compass heading.</string>
 </dict>
 </plist>

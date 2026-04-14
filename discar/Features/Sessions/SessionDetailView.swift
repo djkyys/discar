@@ -9,23 +9,19 @@ import SwiftData
 struct SessionDetailView: View {
     let session: Session
     @StateObject private var viewModel: SessionDetailViewModel
-    @StateObject private var transferManager = WatchDataTransferManager.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteAlert = false
-    
+
     init(session: Session) {
         self.session = session
         _viewModel = StateObject(wrappedValue: SessionDetailViewModel(session: session))
     }
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                
-                // Watch Data Status Card
-                WatchTransferCard(session: session)
-                
+
                 // Session Info Card
                 SessionInfoCard(session: session)
                 
@@ -135,9 +131,12 @@ struct SessionDetailView: View {
                 }
             }
             
+            // Sync to Controller
+            SyncCard(session: session)
+
             // Export Options
             ExportCard(session: session)
-            
+
             // Delete Button
             Button(role: .destructive, action: { showDeleteAlert = true }) {
                 HStack {
@@ -300,7 +299,7 @@ struct SessionInfoCard: View {
             
             InfoRow(label: "Date", value: formatDate(session.date))
             InfoRow(label: "Duration", value: formatDuration(session.duration))
-            InfoRow(label: "Session ID", value: String(session.id.uuidString.prefix(8)) + "...")
+            InfoRow(label: "Session ID", value: String((session.externalUUID ?? session.id.uuidString).prefix(6)))
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -379,6 +378,266 @@ struct SensorDataCard: View {
         .padding()
         .background(Color(.secondarySystemBackground))
         .cornerRadius(12)
+    }
+}
+
+// MARK: - Sync Card
+
+struct SyncCard: View {
+    let session: Session
+    @State private var isSyncing = false
+    @State private var isCheckingPreflight = false
+    @State private var syncResult: SyncResult?
+    @State private var preflightStatus: PreflightStatus?
+
+    enum SyncResult {
+        case success(Int)
+        case error(String)
+    }
+
+    struct PreflightStatus {
+        let recording: Bool
+        let allSynced: Bool
+        let anySyncing: Bool
+        let cameras: [CameraSync]
+
+        struct CameraSync {
+            let name: String
+            let connected: Bool
+            let syncStatus: String
+            let segmentsPending: Int
+        }
+    }
+
+    private var controllerIP: String {
+        UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
+    }
+
+    private var canSync: Bool {
+        guard let status = preflightStatus else { return false }
+        return !status.recording && status.allSynced && !status.anySyncing
+    }
+
+    private var preflightMessage: String? {
+        guard let status = preflightStatus else { return nil }
+        if status.recording { return "Recording in progress" }
+        if status.anySyncing { return "Cameras syncing..." }
+        if !status.allSynced {
+            let pending = status.cameras.filter { $0.segmentsPending > 0 }
+            if !pending.isEmpty {
+                return "Waiting: \(pending.map { $0.name }.joined(separator: ", "))"
+            }
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.blue)
+                Text("Sync to Controller")
+                    .font(.headline)
+                Spacer()
+                if session.isSynced {
+                    Label("Synced", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            Divider()
+
+            // Camera sync status
+            if let status = preflightStatus {
+                VStack(spacing: 8) {
+                    ForEach(status.cameras, id: \.name) { cam in
+                        HStack {
+                            Image(systemName: cam.connected ? "video.fill" : "video.slash.fill")
+                                .foregroundStyle(cam.connected ? .green : .red)
+                                .font(.caption)
+                            Text(cam.name.replacingOccurrences(of: "melb-01-", with: ""))
+                                .font(.caption)
+                            Spacer()
+                            if cam.syncStatus == "syncing" {
+                                HStack(spacing: 4) {
+                                    ProgressView()
+                                        .scaleEffect(0.6)
+                                    Text("Syncing")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            } else if cam.segmentsPending > 0 {
+                                Text("\(cam.segmentsPending) pending")
+                                    .font(.caption2)
+                                    .foregroundStyle(.yellow)
+                            } else if cam.connected {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Upload button
+            Button(action: { syncSession() }) {
+                HStack {
+                    if isSyncing {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Uploading...")
+                    } else if isCheckingPreflight {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Checking...")
+                    } else {
+                        Image(systemName: "icloud.and.arrow.up")
+                        Text("Upload Phone Data")
+                    }
+                    Spacer()
+                    if !isSyncing && !isCheckingPreflight && canSync {
+                        Image(systemName: "arrow.up.circle")
+                    }
+                }
+                .padding()
+                .background(canSync ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
+                .cornerRadius(8)
+            }
+            .disabled(isSyncing || isCheckingPreflight || !canSync)
+
+            // Preflight warning
+            if let msg = preflightMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // Result message
+            if let result = syncResult {
+                switch result {
+                case .success(let count):
+                    Text("Uploaded \(count) files - processing started")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                case .error(let msg):
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            // Show UUID
+            if let uuid = session.externalUUID {
+                Text("UUID: \(uuid.prefix(6))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Refresh button
+            Button(action: { Task { await checkPreflight() } }) {
+                HStack {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Refresh Status")
+                }
+                .font(.caption)
+                .foregroundStyle(.blue)
+            }
+            .disabled(isCheckingPreflight)
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+        .task {
+            await checkPreflight()
+        }
+    }
+
+    private func checkPreflight() async {
+        isCheckingPreflight = true
+        defer { isCheckingPreflight = false }
+
+        guard let url = URL(string: "http://\(controllerIP):8000/api/sync/status") else { return }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5.0
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(SyncStatusResponse.self, from: data)
+
+            await MainActor.run {
+                preflightStatus = PreflightStatus(
+                    recording: response.recording,
+                    allSynced: response.all_synced,
+                    anySyncing: response.any_syncing,
+                    cameras: response.cameras.map { cam in
+                        PreflightStatus.CameraSync(
+                            name: cam.name,
+                            connected: cam.connected,
+                            syncStatus: cam.sync_status ?? "idle",
+                            segmentsPending: cam.segments_pending ?? 0
+                        )
+                    }
+                )
+            }
+        } catch {
+            // Failed to fetch - allow sync anyway
+            await MainActor.run {
+                preflightStatus = PreflightStatus(
+                    recording: false,
+                    allSynced: true,
+                    anySyncing: false,
+                    cameras: []
+                )
+            }
+        }
+    }
+
+    private func syncSession() {
+        isSyncing = true
+        syncResult = nil
+
+        Task {
+            do {
+                let count = try await StorageService.shared.uploadSession(session: session)
+                await MainActor.run {
+                    session.isSynced = true
+                    syncResult = .success(count)
+                    isSyncing = false
+                }
+            } catch {
+                await MainActor.run {
+                    syncResult = .error(error.localizedDescription)
+                    isSyncing = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Sync Status API Response
+
+private struct SyncStatusResponse: Codable {
+    let recording: Bool
+    let uuid: String?
+    let all_synced: Bool
+    let any_syncing: Bool
+    let cameras: [CameraSyncStatus]
+
+    struct CameraSyncStatus: Codable {
+        let name: String
+        let connected: Bool
+        let sync_status: String?
+        let segments_local: Int?
+        let segments_on_ctlr: Int?
+        let segments_pending: Int?
+        let error: String?
     }
 }
 

@@ -186,9 +186,11 @@ struct ChartCard: View {
         case .deviceMotion: return "Roll (rad)"
         case .headphoneMotion: return "Roll (rad)"
         case .heading: return "Magnetic (°)"
+        case .gravity: return "X (g)"
+        case .orientation: return "Yaw (rad)"
         }
     }
-    
+
     private var yAxisLabel: String {
         switch sensorType {
         case .accelerometer: return "Y (m/s²)"
@@ -198,10 +200,12 @@ struct ChartCard: View {
         case .deviceMotion: return "Pitch (rad)"
         case .headphoneMotion: return "Pitch (rad)"
         case .heading: return "True (°)"
+        case .gravity: return "Y (g)"
+        case .orientation: return "Roll (rad)"
         default: return "Y"
         }
     }
-    
+
     private var zAxisLabel: String {
         switch sensorType {
         case .accelerometer: return "Z (m/s²)"
@@ -210,6 +214,8 @@ struct ChartCard: View {
         case .gps: return "H.Accuracy (m)"
         case .deviceMotion: return "Yaw (rad)"
         case .headphoneMotion: return "Yaw (rad)"
+        case .gravity: return "Z (g)"
+        case .orientation: return "Pitch (rad)"
         default: return "Z"
         }
     }

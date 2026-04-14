@@ -33,14 +33,14 @@ class SessionDetailViewModel: ObservableObject {
         let sessionCopy = session
         
         // Load counts in parallel
-        async let accel = storage.getSensorDataCount(session: sessionCopy, filename: "accelerometer.json")
-        async let gyro = storage.getSensorDataCount(session: sessionCopy, filename: "gyroscope.json")
-        async let mag = storage.getSensorDataCount(session: sessionCopy, filename: "magnetometer.json")
-        async let baro = storage.getSensorDataCount(session: sessionCopy, filename: "barometer.json")
-        async let gps = storage.getSensorDataCount(session: sessionCopy, filename: "gps.json")
-        async let motion = storage.getSensorDataCount(session: sessionCopy, filename: "devicemotion.json")
-        async let headphone = storage.getSensorDataCount(session: sessionCopy, filename: "headphonemotion.json") // Added
-        async let heading = storage.getSensorDataCount(session: sessionCopy, filename: "heading.json")
+        async let accel = storage.getSensorDataCount(session: sessionCopy, filename: "accelerometer.csv")
+        async let gyro = storage.getSensorDataCount(session: sessionCopy, filename: "gyroscope.csv")
+        async let mag = storage.getSensorDataCount(session: sessionCopy, filename: "magnetometer.csv")
+        async let baro = storage.getSensorDataCount(session: sessionCopy, filename: "barometer.csv")
+        async let gps = storage.getSensorDataCount(session: sessionCopy, filename: "gps.csv")
+        async let motion = storage.getSensorDataCount(session: sessionCopy, filename: "devicemotion.csv")
+        async let headphone = storage.getSensorDataCount(session: sessionCopy, filename: "headphonemotion.csv")
+        async let heading = storage.getSensorDataCount(session: sessionCopy, filename: "heading.csv")
         
         let results = await (accel, gyro, mag, baro, gps, motion, headphone, heading)
         

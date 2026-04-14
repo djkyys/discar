@@ -67,13 +67,19 @@ class WatchConnectionManager: NSObject, ObservableObject, WCSessionDelegate {
             self.errorMessage = nil // Clear errors on success
             
             if let recordingState = message["isRecording"] as? Bool {
-                self.isRecording = recordingState
-                
                 let sessionID = message["sessionID"] as? String
+                let currentlyRecording = WatchSensorManager.shared.isRecording
+                
+                print("📩 Received message - isRecording: \(recordingState), sessionID: \(sessionID ?? "nil")")
+                print("📩 Current WatchSensorManager.isRecording: \(currentlyRecording)")
+                
+                self.isRecording = recordingState
                 
                 Task { @MainActor in
                     if recordingState {
-                        await WatchSensorManager.shared.startRecording(sessionID: sessionID)
+                        // If already recording, this should resume (maintenance) not restart (new UUID)
+                        let shouldResume = currentlyRecording
+                        await WatchSensorManager.shared.startRecording(sessionID: sessionID, resume: shouldResume)
                     } else {
                         await WatchSensorManager.shared.stopRecording()
                     }

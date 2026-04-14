@@ -19,11 +19,10 @@ struct WatchSensorStatusCard: View {
                 .foregroundStyle(.secondary)
             
             VStack(spacing: 4) {
-                statusRow(name: "Motion", icon: "figure.walk", isAvailable: sensorStatus["Motion"] ?? false)
-                statusRow(name: "GPS", icon: "location.fill", isAvailable: sensorStatus["GPS"] ?? false)
+                statusRow(name: "Motion", icon: "gyroscope", isAvailable: sensorStatus["Motion"] ?? false)
+                statusRow(name: "Compass", icon: "location.north.fill", isAvailable: sensorStatus["Compass"] ?? false)
                 statusRow(name: "Heart", icon: "heart.fill", isAvailable: sensorStatus["Heart"] ?? false)
-                statusRow(name: "Temp", icon: "thermometer", isAvailable: sensorStatus["Temp"] ?? false)
-                statusRow(name: "Env", icon: "barometer", isAvailable: sensorStatus["Env"] ?? false)
+                statusRow(name: "Baro", icon: "barometer", isAvailable: sensorStatus["Baro"] ?? false)
             }
         }
         .padding(10)
@@ -57,23 +56,25 @@ struct WatchSensorStatusCard: View {
         
         var status: [String: Bool] = [:]
         
-        // Motion
-        status["Motion"] = motion.isAccelerometerAvailable && motion.isGyroAvailable
+        // Motion (Device Motion - fused accel + gyro + magnetometer)
+        status["Motion"] = motion.isDeviceMotionAvailable
         
-        // GPS (Location Services)
-        // Note: Actual authorization status is async, assuming available if hardware present for now
-        status["GPS"] = true 
+        // Compass (Heading from CLLocationManager)
+        status["Compass"] = CLLocationManager.headingAvailable()
         
-        // Heart (HealthKit)
-        status["Heart"] = HKHealthStore.isHealthDataAvailable()
+        // Heart (HealthKit available + workout write permission granted)
+        // Note: We can only check WRITE permissions, not READ permissions (Apple privacy policy)
+        let healthStore = HKHealthStore()
+        let healthKitAvailable = HKHealthStore.isHealthDataAvailable()
+        let workoutType = HKQuantityType.workoutType()
+        let workoutGranted = healthStore.authorizationStatus(for: workoutType) == .sharingAuthorized
 
-        // Temperature (HealthKit - body temperature)
-        status["Temp"] = HKHealthStore.isHealthDataAvailable()
+        status["Heart"] = healthKitAvailable && workoutGranted
 
-        // Environment (Barometer)
-        status["Env"] = CMAltimeter.isRelativeAltitudeAvailable()
+        // Barometer
+        status["Baro"] = CMAltimeter.isRelativeAltitudeAvailable()
         
         self.sensorStatus = status
     }
 }
-
+                 

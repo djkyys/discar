@@ -78,8 +78,6 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-
-            Spacer()
         }
     }
 
@@ -91,7 +89,6 @@ struct ContentView: View {
             sensorDot("move.3d", active: sensorManager.isRecording)
             sensorDot("barometer", active: sensorManager.isRecording)
             sensorDot("location.north.fill", active: sensorManager.isRecording)
-            Spacer()
         }
     }
 

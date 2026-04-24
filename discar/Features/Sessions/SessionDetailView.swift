@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import WatchConnectivity
 
 struct SessionDetailView: View {
     let session: Session
@@ -385,14 +386,25 @@ struct SensorDataCard: View {
 
 struct SyncCard: View {
     let session: Session
+    @Environment(\.modelContext) private var modelContext
     @State private var isSyncing = false
     @State private var isCheckingPreflight = false
+    @State private var isRequestingWatchData = false
     @State private var syncResult: SyncResult?
     @State private var preflightStatus: PreflightStatus?
+    @State private var watchStatus: WatchSyncStatus = .unknown
 
     enum SyncResult {
         case success(Int)
         case error(String)
+    }
+
+    enum WatchSyncStatus {
+        case unknown
+        case notReachable
+        case reachable
+        case hasData
+        case transferring
     }
 
     struct PreflightStatus {
@@ -410,12 +422,15 @@ struct SyncCard: View {
     }
 
     private var controllerIP: String {
-        UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
+        AppConfig.Controller.ip
     }
 
     private var canSync: Bool {
         guard let status = preflightStatus else { return false }
-        return !status.recording && status.allSynced && !status.anySyncing
+        // Must have cameras synced AND watch must be reachable (unless already has data)
+        let camerasReady = !status.recording && status.allSynced && !status.anySyncing
+        let watchReady = watchStatus == .reachable || watchStatus == .hasData
+        return camerasReady && watchReady
     }
 
     private var preflightMessage: String? {
@@ -427,6 +442,9 @@ struct SyncCard: View {
             if !pending.isEmpty {
                 return "Waiting: \(pending.map { $0.name }.joined(separator: ", "))"
             }
+        }
+        if watchStatus == .notReachable {
+            return "Connect Apple Watch to sync"
         }
         return nil
     }
@@ -447,6 +465,46 @@ struct SyncCard: View {
             }
 
             Divider()
+
+            // Watch status
+            HStack {
+                Image(systemName: "applewatch")
+                    .foregroundStyle(watchStatusColor)
+                    .font(.caption)
+                Text("Watch")
+                    .font(.caption)
+                Spacer()
+                switch watchStatus {
+                case .unknown:
+                    Text("Checking...")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                case .notReachable:
+                    Text("Not Connected")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                case .reachable:
+                    Text("Ready")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                case .hasData:
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Data Ready")
+                            .foregroundStyle(.green)
+                    }
+                    .font(.caption2)
+                case .transferring:
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                        Text("Transferring...")
+                            .foregroundStyle(.orange)
+                    }
+                    .font(.caption2)
+                }
+            }
 
             // Camera sync status
             if let status = preflightStatus {
@@ -485,17 +543,17 @@ struct SyncCard: View {
             // Upload button
             Button(action: { syncSession() }) {
                 HStack {
-                    if isSyncing {
+                    if isSyncing || isRequestingWatchData {
                         ProgressView()
                             .scaleEffect(0.8)
-                        Text("Uploading...")
+                        Text(isRequestingWatchData ? "Getting Watch Data..." : "Uploading...")
                     } else if isCheckingPreflight {
                         ProgressView()
                             .scaleEffect(0.8)
                         Text("Checking...")
                     } else {
                         Image(systemName: "icloud.and.arrow.up")
-                        Text("Upload Phone Data")
+                        Text("Upload All Data")
                     }
                     Spacer()
                     if !isSyncing && !isCheckingPreflight && canSync {
@@ -506,7 +564,7 @@ struct SyncCard: View {
                 .background(canSync ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
                 .cornerRadius(8)
             }
-            .disabled(isSyncing || isCheckingPreflight || !canSync)
+            .disabled(isSyncing || isCheckingPreflight || !canSync || isRequestingWatchData)
 
             // Preflight warning
             if let msg = preflightMessage {
@@ -556,6 +614,37 @@ struct SyncCard: View {
         .cornerRadius(12)
         .task {
             await checkPreflight()
+            await checkWatchStatus()
+        }
+    }
+
+    private var watchStatusColor: Color {
+        switch watchStatus {
+        case .unknown: return .secondary
+        case .notReachable: return .red
+        case .reachable, .hasData: return .green
+        case .transferring: return .orange
+        }
+    }
+
+    private func checkWatchStatus() async {
+        // Check if we already have watch data
+        let fileManager = FileManager.default
+        guard let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let sessionFolder = docURL.appendingPathComponent("Sessions").appendingPathComponent(session.folderPath)
+
+        if WatchCoordinator.shared.hasWatchData(sessionFolder: sessionFolder) {
+            await MainActor.run { watchStatus = .hasData }
+            return
+        }
+
+        // Check if watch is reachable
+        await MainActor.run {
+            if WCSession.default.isReachable {
+                watchStatus = .reachable
+            } else {
+                watchStatus = .notReachable
+            }
         }
     }
 
@@ -563,7 +652,9 @@ struct SyncCard: View {
         isCheckingPreflight = true
         defer { isCheckingPreflight = false }
 
-        guard let url = URL(string: "http://\(controllerIP):8000/api/sync/status") else { return }
+        // Pass session UUID to check sync status for this specific session
+        let sessionUUID = session.externalUUID ?? session.id.uuidString
+        guard let url = URL(string: "http://\(controllerIP):8000/api/sync/status?uuid=\(sessionUUID)") else { return }
 
         do {
             var request = URLRequest(url: url)
@@ -597,6 +688,9 @@ struct SyncCard: View {
                 )
             }
         }
+
+        // Also refresh watch status
+        await checkWatchStatus()
     }
 
     private func syncSession() {
@@ -604,10 +698,38 @@ struct SyncCard: View {
         syncResult = nil
 
         Task {
+            // Step 1: Request watch data if watch is reachable and we don't have data yet
+            if watchStatus == .reachable, let sessionID = session.externalUUID ?? Optional(session.id.uuidString) {
+                await MainActor.run {
+                    isRequestingWatchData = true
+                    watchStatus = .transferring
+                }
+
+                let watchSuccess = await WatchCoordinator.shared.requestSessionData(
+                    sessionID: sessionID,
+                    timeout: 30
+                )
+
+                await MainActor.run {
+                    isRequestingWatchData = false
+                    watchStatus = watchSuccess ? .hasData : .reachable
+                }
+
+                if !watchSuccess {
+                    await MainActor.run {
+                        syncResult = .error("Failed to get watch data")
+                        isSyncing = false
+                    }
+                    return
+                }
+            }
+
+            // Step 2: Upload all data to controller
             do {
                 let count = try await StorageService.shared.uploadSession(session: session)
                 await MainActor.run {
                     session.isSynced = true
+                    try? modelContext.save()  // Persist isSynced to database
                     syncResult = .success(count)
                     isSyncing = false
                 }

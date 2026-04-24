@@ -8,38 +8,28 @@
 import SwiftUI
 
 struct WatchSessionsView: View {
-    // In a real app, you'd fetch from SwiftData or file system
-    // For this demo, we'll just read the local file system
     @State private var sessions: [WatchSessionMetadata] = []
-    
+
     var body: some View {
         List {
             if sessions.isEmpty {
-                Text("No sessions recorded")
+                Text("No local sessions")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(sessions, id: \.id) { session in
-                    NavigationLink(destination: WatchSessionDetailView(session: session)) {
-                        VStack(alignment: .leading) {
-                            Text(formatDate(session.date))
-                                .font(.headline)
-                            
-                            HStack {
-                                Text(formatDuration(session.duration))
-                                Spacer()
-                                Text(session.id.prefix(4))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(formatDate(session.date))
                             .font(.caption)
+                        Text(formatDuration(session.duration))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                        }
                     }
                 }
                 .onDelete(perform: deleteSession)
             }
         }
-        .navigationTitle("Sessions")
+        .navigationTitle("Local")
         .onAppear {
             loadSessions()
         }

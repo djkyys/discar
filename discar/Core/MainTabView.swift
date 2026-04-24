@@ -12,17 +12,12 @@ struct MainTabView: View {
                 .tabItem {
                     Label("Status", systemImage: "chart.bar.fill")
                 }
-            
-            RecordView()
-                .tabItem {
-                    Label("Record", systemImage: "record.circle")
-                }
-            
+
             SessionsView()
                 .tabItem {
                     Label("Sessions", systemImage: "list.bullet")
                 }
-            
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")

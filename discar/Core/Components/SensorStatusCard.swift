@@ -2,185 +2,98 @@
 //  SensorStatusCard.swift
 //  discar
 //
+//  Sensor status display using Card style
 
 import SwiftUI
 
 struct SensorStatusCard: View {
     let sensorStatus: [String: Bool]
     let isLoading: Bool
-    @State private var isExpanded = false
-    @StateObject private var obdService = OBDService.shared
-    
+
+    private var availableCount: Int {
+        sensorStatus.values.filter { $0 }.count
+    }
+
+    private var totalCount: Int {
+        sensorStatus.count
+    }
+
+    private var statusColor: Color {
+        if totalCount == 0 { return AppTheme.Colors.secondaryLabel }
+        let percentage = Double(availableCount) / Double(totalCount)
+        if percentage == 1.0 { return AppTheme.Colors.success }
+        if percentage >= 0.7 { return AppTheme.Colors.warning }
+        return AppTheme.Colors.error
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: isExpanded ? 16 : 0) {
-            // Header
-            HStack {
-                Image(systemName: "sensor.fill")
-                    .foregroundStyle(.blue)
-                Text("Sensors")
-                    .font(.headline)
-                
-                Spacer()
-                
-                if isLoading {
-                    HStack(spacing: 6) {
+        Card {
+            VStack(spacing: AppTheme.Spacing.md) {
+                // Header
+                HStack {
+                    SectionHeader("Phone Sensors", icon: "sensor.fill")
+                    Spacer()
+                    if isLoading {
                         ProgressView()
-                            .scaleEffect(0.7)
-                        Text("Checking...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .scaleEffect(0.8)
+                    } else if !sensorStatus.isEmpty {
+                        StatusPill("\(availableCount)/\(totalCount)", color: statusColor)
                     }
-                } else if !sensorStatus.isEmpty {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 8, height: 8)
-                        
-                        Text("\(availableCount)/\(sensorStatus.count + 1)") // +1 for OBD
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                guard !isLoading && !sensorStatus.isEmpty else { return }
-                withAnimation(.spring(response: 0.3)) {
-                    isExpanded.toggle()
-                }
-            }
-            
-            // Expanded content
-            if isExpanded {
-                Divider()
-                
-                VStack(spacing: 12) {
-                    if !sensorStatus.isEmpty {
+
+                // Sensor grid
+                if !sensorStatus.isEmpty {
+                    LazyVGrid(columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ], spacing: AppTheme.Spacing.sm) {
                         ForEach(sensorStatus.sorted(by: { $0.key < $1.key }), id: \.key) { sensor in
-                            SensorRow(name: sensor.key, isAvailable: sensor.value)
+                            SensorStatusRow(name: sensor.key, isAvailable: sensor.value)
                         }
                     }
-                    
-                    // Add OBD Row
-                    OBDRow(state: obdService.connectionState)
+                } else if !isLoading {
+                    Text("No sensors detected")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, AppTheme.Spacing.md)
                 }
             }
         }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(12)
-        .onAppear {
-            // Ensure status checking is active
-            obdService.startStatusCheck()
-        }
-    }
-    
-    // Status color based on sensor availability
-    private var statusColor: Color {
-        let totalSensors = Double(max(sensorStatus.count + 1, 1)) // +1 for OBD
-        var activeCount = Double(availableCount)
-        if obdService.isCarConnected { activeCount += 1.0 }
-        
-        let percentage = activeCount / totalSensors
-        if percentage == 1.0 {
-            return .green
-        } else if percentage >= 0.7 {
-            return .orange
-        } else {
-            return .red
-        }
-    }
-    
-    private var availableCount: Int {
-        sensorStatus.values.filter { $0 }.count + (obdService.isCarConnected ? 1 : 0)
     }
 }
 
-// MARK: - OBD Row
-struct OBDRow: View {
-    let state: OBDConnectionState
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            // Status indicator
-            Circle()
-                .fill(stateColor)
-                .frame(width: 10, height: 10)
-            
-            // Sensor icon
-            Image(systemName: "car.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
-            
-            // Sensor name
-            Text("OBD-II (Pi)")
-                .font(.subheadline)
-            
-            Spacer()
-            
-            // Status text
-            Text(state.rawValue)
-                .font(.caption2)
-                .foregroundStyle(stateColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(stateColor.opacity(0.1))
-                .cornerRadius(4)
-        }
-    }
-    
-    private var stateColor: Color {
-        switch state {
-        case .connected, .recording:
-            return .green
-        case .checking:
-            return .orange
-        case .disconnected, .error:
-            return .red
-        }
-    }
-}
+// MARK: - Sensor Status Row
 
-// MARK: - Sensor Row
-struct SensorRow: View {
+private struct SensorStatusRow: View {
     let name: String
     let isAvailable: Bool
-    
+
     var body: some View {
-        HStack(spacing: 12) {
-            // Status indicator
-            Circle()
-                .fill(isAvailable ? Color.green : Color.red)
-                .frame(width: 10, height: 10)
-            
-            // Sensor icon
+        HStack(spacing: AppTheme.Spacing.sm) {
+            StatusDot(isAvailable ? .green : .red)
+
             Image(systemName: sensorIcon)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
-            
-            // Sensor name
-            Text(name)
-                .font(.subheadline)
-            
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                .frame(width: 16)
+
+            Text(shortName)
+                .font(AppTheme.Typography.caption)
+                .foregroundStyle(isAvailable ? AppTheme.Colors.label : AppTheme.Colors.secondaryLabel)
+                .lineLimit(1)
+
             Spacer()
-            
-            // Status text
-            Text(isAvailable ? "Available" : "Unavailable")
-                .font(.caption2)
-                .foregroundStyle(isAvailable ? .green : .red)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(isAvailable ? Color.green.opacity(0.1) : Color.red.opacity(0.1))
-                .cornerRadius(4)
         }
+        .padding(.vertical, AppTheme.Spacing.xs)
     }
-    
+
+    private var shortName: String {
+        // Shorten common sensor names
+        name.replacingOccurrences(of: "Device ", with: "")
+            .replacingOccurrences(of: "Core ", with: "")
+    }
+
     private var sensorIcon: String {
         switch name.lowercased() {
         case let n where n.contains("accelerometer"):
@@ -191,24 +104,14 @@ struct SensorRow: View {
             return "scope"
         case let n where n.contains("motion"):
             return "arrow.trianglehead.2.clockwise.rotate.90"
-        case let n where n.contains("gps"):
+        case let n where n.contains("gps"), let n where n.contains("location"):
             return "location.fill"
-        case let n where n.contains("compass"):
+        case let n where n.contains("compass"), let n where n.contains("heading"):
             return "location.north.fill"
-        case let n where n.contains("pedometer"), let n where n.contains("step"):
-            return "figure.walk"
-        case let n where n.contains("distance"):
-            return "ruler"
-        case let n where n.contains("floor"):
-            return "stairs"
-        case let n where n.contains("pace"):
-            return "speedometer"
-        case let n where n.contains("cadence"):
-            return "metronome"
         case let n where n.contains("barometer"), let n where n.contains("altitude"):
             return "barometer"
-        case let n where n.contains("obd"):
-            return "car.fill"
+        case let n where n.contains("gravity"):
+            return "arrow.down.circle"
         default:
             return "sensor"
         }
@@ -216,19 +119,28 @@ struct SensorRow: View {
 }
 
 #Preview {
-    VStack(spacing: 20) {
-        SensorStatusCard(
-            sensorStatus: [
-                "Accelerometer": true,
-                "Gyroscope": true,
-                "Magnetometer": true,
-                "Device Motion": true,
-                "GPS": true,
-                "Compass": true,
-                "Barometer": true
-            ],
-            isLoading: false
-        )
+    ScrollView {
+        VStack(spacing: AppTheme.Spacing.lg) {
+            SensorStatusCard(
+                sensorStatus: [
+                    "Accelerometer": true,
+                    "Gyroscope": true,
+                    "Magnetometer": true,
+                    "Device Motion": true,
+                    "GPS": false,
+                    "Heading": true,
+                    "Barometer": true,
+                    "Gravity": true
+                ],
+                isLoading: false
+            )
+
+            SensorStatusCard(
+                sensorStatus: [:],
+                isLoading: true
+            )
+        }
+        .padding()
     }
-    .padding()
+    .background(AppTheme.Colors.groupedBackground)
 }

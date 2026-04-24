@@ -11,7 +11,7 @@ class Session {
     var id: UUID
     var date: Date
     var duration: TimeInterval
-    var folderPath: String  // e.g., "2025-11-18_10-30-45_abc123"
+    var folderPath: String  // Full UUID from controller (e.g., "abc12345-6789-0def-...")
     var externalUUID: String?  // UUID from ctlr for correlation
     var isSynced: Bool = false
 
@@ -23,12 +23,9 @@ class Session {
         self.duration = 0
         self.externalUUID = externalUUID
 
-        // Create folder name using ctlr UUID if available, else local UUID
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let dateString = formatter.string(from: date)
-        let shortID = (externalUUID ?? sessionID.uuidString).prefix(6)
-        self.folderPath = "\(dateString)_\(shortID)"
+        // Create folder name using full UUID (ctlr UUID if available, else local UUID)
+        let uuid = externalUUID ?? sessionID.uuidString
+        self.folderPath = uuid
     }
 }
 

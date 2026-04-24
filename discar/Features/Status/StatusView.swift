@@ -2,6 +2,7 @@
 //  StatusView.swift
 //  discar
 //
+//  Clean status dashboard inspired by Tailscale
 
 import SwiftUI
 import SwiftData
@@ -9,260 +10,427 @@ import SwiftData
 struct StatusView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel = StatusViewModel()
+    @StateObject private var recordViewModel: RecordViewModel
+    @EnvironmentObject var appState: AppState
+
+    init() {
+        // RecordViewModel needs modelContext, but we can't access @Environment in init
+        // So we create it without modelContext and update later
+        _recordViewModel = StateObject(wrappedValue: RecordViewModel())
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: AppTheme.Spacing.lg) {
+                    // Record Section
+                    RecordSection(
+                        recordViewModel: recordViewModel,
+                        appState: appState
+                    )
 
-                    // 1. Controller Status
+                    // Connection status
+                    ConnectionCard(state: viewModel.connectionState)
+
+                    // Controller
                     ControllerCard(
-                        status: viewModel.ctlrStatus,
-                        message: viewModel.ctlrMessage
+                        controller: viewModel.controller,
+                        isConnected: viewModel.connectionState.isConnected
                     )
 
-                    // 2. CAN Bus Status
-                    CANStatusCard(
-                        connected: viewModel.canConnected,
-                        frameCount: viewModel.canFrameCount
+                    // Cameras
+                    CamerasCard(
+                        cameras: viewModel.cameras,
+                        syncProgress: viewModel.syncProgress
                     )
 
-                    // 3. Refresh Button
-                    Button(action: {
-                        Task { await viewModel.fetchStatus() }
-                    }) {
-                        HStack {
-                            Image(systemName: "arrow.clockwise")
-                            Text("Refresh")
-                        }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color(uiColor: .secondarySystemBackground))
-                        .foregroundStyle(.primary)
-                        .cornerRadius(12)
+                    // CAN & System
+                    HStack(spacing: AppTheme.Spacing.lg) {
+                        CANCard(can: viewModel.can)
+                        SystemCard(system: viewModel.system)
                     }
 
-                    // 4. Live Data Section
-                    if viewModel.ctlrStatus == .ready || viewModel.ctlrStatus == .recording {
-                        VStack(spacing: 20) {
-                            // Cameras Active
-                            StatsCard(
-                                title: "Cameras",
-                                value: viewModel.connectedCameras,
-                                unit: "Active",
-                                icon: "video.fill"
-                            )
+                    // Storage
+                    StorageCard(
+                        storage: viewModel.storage,
+                        isRecording: recordViewModel.isRecording,
+                        isRemounting: viewModel.isRemounting,
+                        isUnmounting: viewModel.isUnmounting,
+                        unmountMessage: viewModel.unmountMessage,
+                        storageError: viewModel.storageError,
+                        onRemount: { Task { await viewModel.remountStorage() } },
+                        onUnmount: { Task { await viewModel.unmountSync() } }
+                    )
 
-                            // System Stats
-                            SystemStatsCard(
-                                storageUsed: viewModel.storageUsedGB,
-                                storageTotal: viewModel.storageTotalGB,
-                                storagePercent: viewModel.storagePercent,
-                                cpu: viewModel.cpuPercent,
-                                temp: viewModel.tempC
-                            )
-
-                            // Storage Health
-                            StorageHealthCard(
-                                healthy: viewModel.storageHealthy,
-                                loggingMounted: viewModel.loggingMounted,
-                                loggingFreeGB: viewModel.loggingFreeGB,
-                                syncMounted: viewModel.syncMounted,
-                                syncFreeGB: viewModel.syncFreeGB,
-                                isRemounting: viewModel.isRemounting,
-                                isUnmounting: viewModel.isUnmounting,
-                                unmountMessage: viewModel.unmountMessage,
-                                storageError: viewModel.storageError,
-                                onRemount: {
-                                    Task { await viewModel.remountStorage() }
-                                },
-                                onUnmount: {
-                                    Task { await viewModel.unmountSync() }
-                                }
-                            )
-
-                            // Camera System Grid
-                            if !viewModel.cameraNodes.isEmpty {
-                                CameraGrid(nodes: viewModel.cameraNodes)
-                            }
-                        }
-                    }
-
-                    Spacer()
+                    // Sessions
+                    SessionsCard(
+                        totalSessions: viewModel.totalSessions,
+                        totalTime: viewModel.totalTimeFormatted,
+                        averageSession: viewModel.averageSessionFormatted,
+                        lastSessionDate: viewModel.lastSessionDate
+                    )
                 }
                 .padding()
             }
+            .background(AppTheme.Colors.groupedBackground)
             .navigationTitle("Status")
             .onAppear {
                 viewModel.updateModelContext(modelContext)
-                viewModel.loadData()
-            }
-            .onDisappear {
-                viewModel.stopPolling()
+                viewModel.connect()
+                viewModel.loadSessionStats()
+                recordViewModel.updateModelContext(modelContext)
             }
         }
     }
 }
 
-// MARK: - Components
+// MARK: - Connection Card
 
-struct ControllerCard: View {
-    let status: StatusViewModel.CtlrStatus
-    let message: String
+private struct ConnectionCard: View {
+    let state: WebSocketService.ConnectionState
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Controller")
-                    .font(.headline)
-                    .foregroundStyle(.gray)
+        HStack(spacing: AppTheme.Spacing.sm) {
+            StatusDot(statusColor)
 
-                HStack {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 10, height: 10)
-                        .padding(2)
-                        .background(Circle().stroke(statusColor.opacity(0.3), lineWidth: 2))
-
-                    Text(message)
-                        .font(.title3)
-                        .fontWeight(.bold)
-                        .lineLimit(1)
-                }
-            }
+            Text(state.displayText)
+                .font(AppTheme.Typography.subheadline)
+                .foregroundStyle(AppTheme.Colors.secondaryLabel)
 
             Spacer()
 
-            Image(systemName: "server.rack")
-                .font(.largeTitle)
-                .foregroundStyle(Color.blue)
-                .opacity(0.8)
+            if case .reconnecting = state {
+                ProgressView()
+                    .scaleEffect(0.8)
+            }
         }
-        .padding()
-        .background(Color(uiColor: .secondarySystemBackground))
-        .cornerRadius(16)
+        .padding(.horizontal, AppTheme.Spacing.lg)
+        .padding(.vertical, AppTheme.Spacing.md)
+        .background(AppTheme.Colors.secondaryBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
     }
 
     private var statusColor: Color {
-        switch status {
-        case .disconnected: return .gray
-        case .connecting: return .yellow
-        case .ready: return .green
-        case .recording: return .red
-        case .error: return .orange
+        switch state {
+        case .connected: return .green
+        case .connecting, .reconnecting: return .orange
+        case .disconnected: return .red
         }
     }
 }
 
-struct StatsCard: View {
-    let title: String
+// MARK: - Controller Card
+
+private struct ControllerCard: View {
+    let controller: WebSocketService.ControllerStatus?
+    let isConnected: Bool
+
+    var body: some View {
+        Card {
+            HStack {
+                IconBadge("server.rack", color: statusColor)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Controller")
+                        .font(AppTheme.Typography.headline)
+
+                    if let ctrl = controller {
+                        Text(statusText(ctrl))
+                            .font(AppTheme.Typography.subheadline)
+                            .foregroundStyle(statusColor)
+                    } else {
+                        Text(isConnected ? "Loading..." : "Offline")
+                            .font(AppTheme.Typography.subheadline)
+                            .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                    }
+                }
+
+                Spacer()
+
+                if let ctrl = controller {
+                    if ctrl.recording {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(formatDuration(ctrl.duration))
+                                .font(AppTheme.Typography.monoLarge)
+                                .foregroundStyle(.red)
+                            if let uuid = ctrl.uuid {
+                                Text(String(uuid.prefix(8)))
+                                    .font(AppTheme.Typography.caption)
+                                    .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                            }
+                        }
+                    } else {
+                        StatusPill(ctrl.ready ? "Ready" : "Not Ready", color: ctrl.ready ? .green : .orange)
+                    }
+                }
+            }
+        }
+    }
+
+    private var statusColor: Color {
+        guard let ctrl = controller else { return .gray }
+        if ctrl.recording { return .red }
+        if ctrl.ready { return .green }
+        return .orange
+    }
+
+    private func statusText(_ ctrl: WebSocketService.ControllerStatus) -> String {
+        if ctrl.recording { return "Recording" }
+        if ctrl.ready { return "System Ready" }
+        return "Cameras Not Ready"
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+}
+
+// MARK: - Cameras Card
+
+private struct CamerasCard: View {
+    let cameras: [WebSocketService.CameraStatus]
+    let syncProgress: [String: WebSocketService.SyncProgress]
+
+    var body: some View {
+        Card {
+            VStack(spacing: AppTheme.Spacing.md) {
+                HStack {
+                    SectionHeader("Cameras", icon: "video")
+
+                    Spacer()
+
+                    let online = cameras.filter { $0.connected }.count
+                    Text("\(online)/\(cameras.count)")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(online == cameras.count ? .green : .orange)
+                }
+
+                if cameras.isEmpty {
+                    Text("No cameras")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, AppTheme.Spacing.lg)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(cameras.enumerated()), id: \.element.name) { index, camera in
+                            if index > 0 {
+                                Divider().padding(.vertical, AppTheme.Spacing.sm)
+                            }
+                            CameraRow(camera: camera, syncProgress: syncProgress[camera.name])
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CameraRow: View {
+    let camera: WebSocketService.CameraStatus
+    let syncProgress: WebSocketService.SyncProgress?
+
+    private var shortName: String {
+        if let last = camera.name.split(separator: "-").last {
+            return "Camera \(last)"
+        }
+        return camera.name
+    }
+
+    private var stateColor: Color {
+        if !camera.connected { return .gray }
+        switch camera.state.lowercased() {
+        case "recording": return .red
+        case "idle": return .green
+        default: return .orange
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: AppTheme.Spacing.sm) {
+            HStack {
+                StatusDot(stateColor)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(shortName)
+                        .font(AppTheme.Typography.body)
+
+                    Text(camera.connected ? camera.state.capitalized : "Offline")
+                        .font(AppTheme.Typography.caption)
+                        .foregroundStyle(stateColor)
+                }
+
+                Spacer()
+
+                if camera.connected {
+                    HStack(spacing: AppTheme.Spacing.md) {
+                        if let temp = camera.temp {
+                            MetricLabel(String(format: "%.0f°", temp), icon: "thermometer.medium")
+                        }
+                        if let cpu = camera.cpu {
+                            MetricLabel(String(format: "%.0f%%", cpu), icon: "cpu")
+                        }
+                    }
+                }
+            }
+
+            // Sync progress bar
+            if let sync = syncProgress, sync.queued > 0 {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Text("Sync")
+                        .font(AppTheme.Typography.caption)
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(AppTheme.Colors.tertiaryBackground)
+                                .frame(height: 4)
+
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(sync.status == "complete" ? Color.green : Color.blue)
+                                .frame(width: geo.size.width * CGFloat(sync.synced) / CGFloat(max(sync.queued, 1)), height: 4)
+                        }
+                    }
+                    .frame(height: 4)
+
+                    Text("\(sync.synced)/\(sync.queued)")
+                        .font(AppTheme.Typography.monoSmall)
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                }
+            }
+        }
+    }
+}
+
+private struct MetricLabel: View {
     let value: String
-    let unit: String
     let icon: String
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: icon)
-                    .foregroundStyle(Color.blue)
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                if !unit.isEmpty {
-                    Text(unit)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(uiColor: .secondarySystemBackground))
-        .cornerRadius(12)
+    init(_ value: String, icon: String) {
+        self.value = value
+        self.icon = icon
     }
-}
-
-struct SystemStatsCard: View {
-    let storageUsed: Double
-    let storageTotal: Double
-    let storagePercent: Double
-    let cpu: Double
-    let temp: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Controller")
-                .font(.headline)
-                .foregroundStyle(.gray)
-                .padding(.leading, 4)
-
-            VStack(spacing: 12) {
-                // Storage Bar
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Image(systemName: "externaldrive.fill")
-                            .foregroundStyle(.blue)
-                        Text("Storage")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.1f / %.0f GB", storageUsed, storageTotal))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    ProgressView(value: storagePercent, total: 100)
-                        .tint(storagePercent > 80 ? .red : storagePercent > 60 ? .orange : .blue)
-                }
-
-                Divider()
-
-                // CPU & Temp Row
-                HStack(spacing: 20) {
-                    HStack {
-                        Image(systemName: "cpu")
-                            .foregroundStyle(.blue)
-                        Text("CPU")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.0f%%", cpu))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .frame(maxWidth: .infinity)
-
-                    HStack {
-                        Image(systemName: "thermometer.medium")
-                            .foregroundStyle(temp > 70 ? .red : temp > 60 ? .orange : .blue)
-                        Text("Temp")
-                            .font(.subheadline)
-                        Spacer()
-                        Text(String(format: "%.0f°C", temp))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-            .padding()
-            .background(Color(uiColor: .secondarySystemBackground))
-            .cornerRadius(12)
+        HStack(spacing: 2) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+            Text(value)
+                .font(AppTheme.Typography.monoSmall)
+                .foregroundStyle(AppTheme.Colors.secondaryLabel)
         }
     }
 }
 
-struct StorageHealthCard: View {
-    let healthy: Bool
-    let loggingMounted: Bool
-    let loggingFreeGB: Double
-    let syncMounted: Bool
-    let syncFreeGB: Double
+// MARK: - CAN Card
+
+private struct CANCard: View {
+    let can: WebSocketService.CANStatus?
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack {
+                    Image(systemName: "car.fill")
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                    Text("CAN")
+                        .font(AppTheme.Typography.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                }
+
+                Spacer(minLength: 0)
+
+                if let can = can {
+                    HStack {
+                        StatusDot(can.connected ? .green : .red)
+                        Text(can.connected ? "Connected" : "Disconnected")
+                            .font(AppTheme.Typography.subheadline)
+                            .foregroundStyle(can.connected ? .green : .red)
+                    }
+
+                    Text(can.connected && can.fileSizeBytes > 0 ? formatBytes(can.fileSizeBytes) : "--")
+                        .font(AppTheme.Typography.monoSmall)
+                        .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                } else {
+                    Text("--")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                    Text("--")
+                        .font(AppTheme.Typography.monoSmall)
+                        .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        }
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+        return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+    }
+}
+
+// MARK: - System Card
+
+private struct SystemCard: View {
+    let system: WebSocketService.SystemStatus?
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack {
+                    Image(systemName: "cpu")
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                    Text("System")
+                        .font(AppTheme.Typography.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                }
+
+                Spacer(minLength: 0)
+
+                if let sys = system {
+                    HStack(spacing: AppTheme.Spacing.lg) {
+                        VStack(alignment: .leading) {
+                            Text(String(format: "%.0f%%", sys.cpuPercent))
+                                .font(AppTheme.Typography.subheadline)
+                            Text("CPU")
+                                .font(AppTheme.Typography.caption2)
+                                .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                        }
+
+                        VStack(alignment: .leading) {
+                            Text(String(format: "%.0f°", sys.tempC))
+                                .font(AppTheme.Typography.subheadline)
+                            Text("Temp")
+                                .font(AppTheme.Typography.caption2)
+                                .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                        }
+                    }
+                } else {
+                    Text("--")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                    Text("--")
+                        .font(AppTheme.Typography.monoSmall)
+                        .foregroundStyle(AppTheme.Colors.tertiaryLabel)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        }
+    }
+}
+
+// MARK: - Storage Card
+
+private struct StorageCard: View {
+    let storage: WebSocketService.StorageStatus?
+    let isRecording: Bool
     let isRemounting: Bool
     let isUnmounting: Bool
     let unmountMessage: String?
@@ -271,312 +439,308 @@ struct StorageHealthCard: View {
     let onUnmount: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Storage")
-                    .font(.headline)
-                    .foregroundStyle(.gray)
+        Card {
+            VStack(spacing: AppTheme.Spacing.md) {
+                HStack {
+                    SectionHeader("Storage", icon: "externaldrive")
+                    Spacer()
+                    if let s = storage {
+                        StatusPill(s.healthy ? "Healthy" : "Issue", color: s.healthy ? .green : .red)
+                    }
+                }
 
-                Spacer()
+                if let s = storage {
+                    VStack(spacing: AppTheme.Spacing.sm) {
+                        StorageRow(name: "Logging", mounted: s.loggingMounted, freeGB: s.loggingFreeGB)
+                        Divider()
+                        StorageRow(name: "Sync", mounted: s.syncMounted, freeGB: s.syncFreeGB)
+                    }
 
-                if healthy {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
+                    if !s.healthy || s.syncMounted {
+                        HStack(spacing: AppTheme.Spacing.sm) {
+                            if !s.healthy {
+                                Button(action: onRemount) {
+                                    HStack {
+                                        if isRemounting {
+                                            ProgressView().scaleEffect(0.8)
+                                        } else {
+                                            Image(systemName: "arrow.clockwise")
+                                        }
+                                        Text("Remount")
+                                    }
+                                    .font(AppTheme.Typography.subheadline.weight(.medium))
+                                    .foregroundStyle(.orange)
+                                    .padding(.horizontal, AppTheme.Spacing.md)
+                                    .padding(.vertical, AppTheme.Spacing.sm)
+                                    .background(Color.orange.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
+                                }
+                                .disabled(isRemounting)
+                            }
+
+                            if s.syncMounted {
+                                Button(action: onUnmount) {
+                                    HStack {
+                                        if isUnmounting {
+                                            ProgressView().scaleEffect(0.8)
+                                        } else {
+                                            Image(systemName: "eject")
+                                        }
+                                        Text("Eject")
+                                    }
+                                    .font(AppTheme.Typography.subheadline.weight(.medium))
+                                    .foregroundStyle(isRecording ? .gray : .blue)
+                                    .padding(.horizontal, AppTheme.Spacing.md)
+                                    .padding(.vertical, AppTheme.Spacing.sm)
+                                    .background((isRecording ? Color.gray : Color.blue).opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
+                                }
+                                .disabled(isUnmounting || isRecording)
+                            }
+                        }
+
+                        if isRecording && s.syncMounted {
+                            Text("Can't eject during recording")
+                                .font(AppTheme.Typography.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+
+                    if let msg = unmountMessage {
+                        Text(msg)
+                            .font(AppTheme.Typography.caption)
                             .foregroundStyle(.green)
-                        Text("Healthy")
-                            .font(.caption)
-                            .foregroundStyle(.green)
+                    }
+
+                    if let err = storageError {
+                        Text(err)
+                            .font(AppTheme.Typography.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct StorageRow: View {
+    let name: String
+    let mounted: Bool
+    let freeGB: Double
+
+    var body: some View {
+        HStack {
+            StatusDot(mounted ? .green : .red)
+
+            Text(name)
+                .font(AppTheme.Typography.body)
+
+            Spacer()
+
+            if mounted {
+                Text(String(format: "%.0f GB free", freeGB))
+                    .font(AppTheme.Typography.monoSmall)
+                    .foregroundStyle(AppTheme.Colors.secondaryLabel)
+            } else {
+                Text("Not mounted")
+                    .font(AppTheme.Typography.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+// MARK: - Sessions Card
+
+private struct SessionsCard: View {
+    let totalSessions: Int
+    let totalTime: String
+    let averageSession: String
+    let lastSessionDate: String?
+
+    var body: some View {
+        Card {
+            VStack(spacing: AppTheme.Spacing.md) {
+                SectionHeader("Sessions", icon: "list.bullet")
+
+                if totalSessions > 0 {
+                    HStack {
+                        StatValue("\(totalSessions)", label: "Total")
+                        Spacer()
+                        StatValue(totalTime, label: "Recorded")
+                        Spacer()
+                        StatValue(averageSession, label: "Average")
+                    }
+
+                    if let lastDate = lastSessionDate {
+                        Divider()
+                        HStack {
+                            Text("Last session")
+                                .font(AppTheme.Typography.caption)
+                                .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                            Spacer()
+                            Text(lastDate)
+                                .font(AppTheme.Typography.caption)
+                                .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                        }
                     }
                 } else {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                        Text("Issue")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                    Text("No sessions recorded")
+                        .font(AppTheme.Typography.subheadline)
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                        .padding(.vertical, AppTheme.Spacing.md)
                 }
             }
-            .padding(.leading, 4)
+        }
+    }
+}
 
-            VStack(spacing: 10) {
-                // Logging Mount
-                HStack {
-                    Image(systemName: loggingMounted ? "externaldrive.fill" : "externaldrive.badge.xmark")
-                        .foregroundStyle(loggingMounted ? .blue : .red)
-                    Text("Logging")
-                        .font(.subheadline)
-                    Spacer()
-                    if loggingMounted {
-                        Text(String(format: "%.0f GB free", loggingFreeGB))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Not Mounted")
-                            .font(.caption)
-                            .foregroundStyle(.red)
+// MARK: - Record Section
+
+private struct RecordSection: View {
+    @ObservedObject var recordViewModel: RecordViewModel
+    @ObservedObject var appState: AppState
+
+    var body: some View {
+        VStack(spacing: AppTheme.Spacing.lg) {
+            // Recording card with button
+            Card {
+                VStack(spacing: AppTheme.Spacing.md) {
+                    // Live sensor health (during recording)
+                    if recordViewModel.isRecording, let health = recordViewModel.sensorHealth {
+                        SensorHealthBar(health: health)
                     }
-                }
 
-                Divider()
-
-                // Sync Mount
-                HStack {
-                    Image(systemName: syncMounted ? "externaldrive.fill" : "externaldrive.badge.xmark")
-                        .foregroundStyle(syncMounted ? .blue : .red)
-                    Text("Sync (exFAT)")
-                        .font(.subheadline)
-                    Spacer()
-                    if syncMounted {
-                        Text(String(format: "%.0f GB free", syncFreeGB))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Not Mounted")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                // Remount button if unhealthy
-                if !healthy {
-                    Divider()
-                    Button(action: onRemount) {
-                        HStack {
-                            if isRemounting {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            Text(isRemounting ? "Remounting..." : "Remount Storage")
+                    // External connections (during recording)
+                    if recordViewModel.isRecording {
+                        VStack(spacing: AppTheme.Spacing.sm) {
+                            ConnectionStatusRow(
+                                icon: "applewatch",
+                                label: "Watch",
+                                isConnected: recordViewModel.isWatchConnected,
+                                detail: recordViewModel.isWatchConnected ? "Recording" : nil
+                            )
+                            CANStatusRow(
+                                connected: recordViewModel.canConnected,
+                                fileSizeFormatted: recordViewModel.canFileSizeFormatted
+                            )
                         }
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(Color.orange.opacity(0.2))
-                        .foregroundStyle(.orange)
-                        .cornerRadius(8)
                     }
-                    .disabled(isRemounting)
-                }
 
-                // Unmount button for safe removal (only when sync is mounted)
-                if syncMounted {
-                    Divider()
-                    Button(action: onUnmount) {
-                        HStack {
-                            if isUnmounting {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                            } else {
-                                Image(systemName: "eject.fill")
+                    // Record Button
+                    if recordViewModel.isStarting {
+                        ProgressView("Preparing System...")
+                            .padding(.vertical, AppTheme.Spacing.md)
+                    } else {
+                        RecordButton(
+                            isRecording: recordViewModel.isRecording,
+                            duration: recordViewModel.durationFormatted,
+                            action: {
+                                Task {
+                                    if recordViewModel.isRecording {
+                                        await recordViewModel.stopRecording()
+                                    } else {
+                                        await recordViewModel.startRecording()
+                                    }
+                                }
                             }
-                            Text(isUnmounting ? "Ejecting..." : "Eject Sync Drive")
+                        )
+                    }
+                }
+            }
+
+            // Sensor status (below record button, when not recording)
+            if !recordViewModel.isRecording {
+                SensorStatusCardCompact(
+                    sensorStatus: appState.sensorStatus,
+                    isLoading: appState.isCheckingSensors
+                )
+            }
+        }
+        .alert("Recording Failed", isPresented: $recordViewModel.showError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(recordViewModel.errorMessage ?? "Unknown Error")
+        }
+        .alert("Start Watch Recording", isPresented: $recordViewModel.showWatchStartPrompt) {
+            Button("OK") { }
+        } message: {
+            Text("Recording started. Open Watch app and tap Start to begin watch recording.")
+        }
+        .alert("Stop Watch Recording", isPresented: $recordViewModel.showWatchStopPrompt) {
+            Button("OK") { }
+        } message: {
+            Text("Recording stopped. Open Watch app and tap Stop to end watch recording.")
+        }
+    }
+}
+
+// MARK: - Compact Sensor Status Card
+
+private struct SensorStatusCardCompact: View {
+    let sensorStatus: [String: Bool]
+    let isLoading: Bool
+
+    private var sortedSensors: [(name: String, active: Bool)] {
+        sensorStatus.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+    }
+
+    private func iconFor(_ name: String) -> String {
+        switch name.lowercased() {
+        case let n where n.contains("accelerometer"): return "move.3d"
+        case let n where n.contains("gyro"): return "rotate.3d"
+        case let n where n.contains("magnet"): return "safari"  // compass-like
+        case let n where n.contains("motion"): return "figure.walk"
+        case let n where n.contains("gps"), let n where n.contains("location"): return "location.fill"
+        case let n where n.contains("heading"), let n where n.contains("compass"): return "location.north.fill"
+        case let n where n.contains("barometer"), let n where n.contains("altitude"): return "barometer"
+        case let n where n.contains("gravity"): return "arrow.down.circle"
+        case let n where n.contains("orientation"): return "gyroscope"
+        default: return "sensor"
+        }
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                // Header
+                HStack {
+                    Image(systemName: "iphone")
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                    Text("PHONE SENSORS")
+                        .font(AppTheme.Typography.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.secondaryLabel)
+                    Spacer()
+                    if isLoading {
+                        ProgressView().scaleEffect(0.7)
+                    }
+                }
+
+                if !isLoading && !sensorStatus.isEmpty {
+                    // Sensor icons in a row
+                    HStack(spacing: AppTheme.Spacing.md) {
+                        ForEach(sortedSensors, id: \.name) { sensor in
+                            VStack(spacing: 2) {
+                                Image(systemName: iconFor(sensor.name))
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(sensor.active ? AppTheme.Colors.success : AppTheme.Colors.error)
+                                Circle()
+                                    .fill(sensor.active ? AppTheme.Colors.success : AppTheme.Colors.error)
+                                    .frame(width: 4, height: 4)
+                            }
                         }
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(Color.blue.opacity(0.2))
-                        .foregroundStyle(.blue)
-                        .cornerRadius(8)
+                        Spacer()
                     }
-                    .disabled(isUnmounting)
-                }
-
-                // Show unmount message or error
-                if let message = unmountMessage {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                        .padding(.top, 4)
-                }
-
-                if let error = storageError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.top, 4)
-                }
-            }
-            .padding()
-            .background(Color(uiColor: .secondarySystemBackground))
-            .cornerRadius(12)
-        }
-    }
-}
-
-struct CameraGrid: View {
-    let nodes: [StatusViewModel.CameraNode]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Cameras")
-                .font(.headline)
-                .foregroundStyle(.gray)
-                .padding(.leading, 4)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(nodes) { node in
-                    CameraStatusCard(node: node)
                 }
             }
         }
     }
 }
 
-struct CameraStatusCard: View {
-    let node: StatusViewModel.CameraNode
-
-    private var shortName: String {
-        // "melb-01-cam-01" -> "Cam 01"
-        let parts = node.name.split(separator: "-")
-        if parts.count >= 2, let last = parts.last {
-            return "Cam \(last)"
-        }
-        return node.name
-    }
-
-    private var stateColor: Color {
-        switch node.state.lowercased() {
-        case "recording": return .red
-        case "idle": return .green
-        default: return .orange
-        }
-    }
-
-    private var syncIcon: String {
-        if node.syncStatus == "syncing" {
-            return "arrow.triangle.2.circlepath"
-        }
-        if let queued = node.syncSegmentsQueued, queued > 0 {
-            return "clock.arrow.circlepath"
-        }
-        return "checkmark.circle.fill"
-    }
-
-    private var syncColor: Color {
-        if node.syncStatus == "syncing" {
-            return .orange
-        }
-        if let queued = node.syncSegmentsQueued, queued > 0 {
-            return .yellow
-        }
-        if node.syncError != nil {
-            return .red
-        }
-        return .green
-    }
-
-    private var syncText: String {
-        let onCtlr = node.segmentsOnCtlr ?? 0
-        let synced = node.syncSegmentsSynced ?? 0
-
-        if node.syncStatus == "syncing" {
-            return "Syncing... (\(onCtlr) on ctlr)"
-        }
-        if let queued = node.syncSegmentsQueued, queued > 0 {
-            return "\(queued) pending"
-        }
-        if let segment = node.segment, node.state.lowercased() == "recording" {
-            return "\(onCtlr)/\(segment + 1) synced"
-        }
-        return "\(onCtlr) synced"
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            // Header: Icon + Name + Status
-            HStack {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: node.state.lowercased() == "recording" ? "video.fill.badge.checkmark" : "video.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(node.connected ? stateColor : Color.gray.opacity(0.5))
-
-                    Circle()
-                        .fill(node.connected ? Color.green : Color.red)
-                        .frame(width: 6, height: 6)
-                        .offset(x: 3, y: -3)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(shortName)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Text(node.state)
-                        .font(.caption2)
-                        .foregroundStyle(stateColor)
-                }
-
-                Spacer()
-
-                // Segment when recording
-                if let segment = node.segment, node.state.lowercased() == "recording" {
-                    Text("Seg \(segment)")
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.red.opacity(0.2))
-                        .cornerRadius(4)
-                }
-            }
-
-            if node.connected {
-                Divider()
-
-                // Stats Grid
-                HStack(spacing: 12) {
-                    if let temp = node.temp {
-                        StatBadge(icon: "thermometer", value: String(format: "%.0f°", temp), color: temp > 70 ? .red : temp > 60 ? .orange : .blue)
-                    }
-                    if let cpu = node.cpu {
-                        StatBadge(icon: "cpu", value: String(format: "%.0f%%", cpu), color: cpu > 80 ? .red : .blue)
-                    }
-                    if let disk = node.diskFreeGB {
-                        StatBadge(icon: "internaldrive", value: String(format: "%.0fG", disk), color: disk < 5 ? .red : .blue)
-                    }
-                }
-
-                // Sync Status Row
-                if let synced = node.syncSegmentsSynced, let onCtlr = node.segmentsOnCtlr {
-                    Divider()
-                    HStack(spacing: 4) {
-                        Image(systemName: syncIcon)
-                            .font(.caption2)
-                            .foregroundStyle(syncColor)
-                        Text(syncText)
-                            .font(.caption2)
-                            .foregroundStyle(syncColor)
-                    }
-                }
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .cornerRadius(12)
-    }
-}
-
-struct StatBadge: View {
-    let icon: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.caption2)
-                .foregroundStyle(color)
-            Text(value)
-                .font(.caption2)
-                .fontWeight(.medium)
-        }
-    }
-}
+// MARK: - Preview
 
 #Preview {
     StatusView()
+        .environmentObject(AppState())
 }

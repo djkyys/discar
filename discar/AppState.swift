@@ -18,10 +18,15 @@ class AppState: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     override init() {
         super.init()
-        
+
         // Set delegate to receive authorization updates
         locationManager.delegate = self
-        
+
+        // Request location permission immediately on app launch
+        if locationManager.authorizationStatus == .notDetermined {
+            locationManager.requestAlwaysAuthorization()
+        }
+
         // Observer for Audio Route Changes (AirPods connect/disconnect)
         NotificationCenter.default.addObserver(
             self,
@@ -29,7 +34,7 @@ class AppState: NSObject, ObservableObject, CLLocationManagerDelegate {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
-        
+
         // Start background sensor check immediately on app launch
         Task.detached(priority: .background) {
             await self.checkSensors()

@@ -7,6 +7,7 @@
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>
+		<string>location</string>
 	</array>
 	<key>NSHealthShareUsageDescription</key>
 	<string>This app reads heart rate data to monitor driver alertness during driving sessions.</string>
@@ -15,6 +16,8 @@
 	<key>NSMotionUsageDescription</key>
 	<string>This app uses motion sensors to detect driving patterns.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app uses location for compass heading.</string>
+	<string>This app uses your location to track driving routes and correlate with sensor data.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app uses your location in the background to continuously track driving routes during recording sessions.</string>
 </dict>
 </plist>

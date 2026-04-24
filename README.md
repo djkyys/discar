@@ -1,224 +1,366 @@
 # discar - iOS Companion App
 
-iOS app for the multi-camera recording system. Captures phone sensor data synchronized with camera recordings.
+iOS + watchOS sensor recording app for synchronized multi-camera vehicle data collection.
 
-## Architecture
+## Architecture: Pragmatic MVVM
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  iOS App (discar)                                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │   Status    │    │   Record    │    │  Sessions   │     │
-│  │    View     │    │    View     │    │    View     │     │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘     │
-│         │                  │                  │             │
-│         │           ┌──────▼──────┐           │             │
-│         └──────────►│  Services   │◄──────────┘             │
-│                     │             │                         │
-│                     ├─────────────┤                         │
-│                     │ SensorService│ ◄── CoreMotion        │
-│                     │ StorageService│◄── CSV files         │
-│                     │ OBDService   │ ◄── Bluetooth OBD     │
-│                     └─────────────┘                         │
-│                            │                                │
-└────────────────────────────┼────────────────────────────────┘
-                             │ HTTP
-                             ▼
-                      ┌─────────────┐
-                      │   ctlr      │
-                      │  (Pi 4)     │
-                      └─────────────┘
+│                      Views (SwiftUI)                         │
+│   StatusView (+ Record)  │  SessionsView  │  SettingsView   │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ @StateObject
+┌───────────────────────▼─────────────────────────────────────┐
+│                      ViewModels                              │
+│   StatusVM  │  RecordVM  │  SessionsVM  │  SettingsVM       │
+│   - UI state (@Published)                                    │
+│   - Orchestrates services                                    │
+│   - No business logic duplication                            │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ Direct calls
+┌───────────────────────▼─────────────────────────────────────┐
+│                      Services                                │
+│   SensorManager    │  StorageService  │  APIClient          │
+│   WebSocketService │  WatchCoordinator │  Logger            │
+│   - Singletons (.shared)                                     │
+│   - Thread-safe (actor/@MainActor)                           │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────────────┐
+│                   Data + Config                              │
+│   Session (SwiftData)  │  SensorData (CSV)  │  AppConfig    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Features
+### Design Principles
 
-### Status View
-- Controller connection status
-- Camera status cards (supports 2+ cameras dynamically):
-  - State (idle/recording)
-  - Current segment
-  - System stats (CPU, temp, disk)
-  - Sync status (segments synced/pending)
-- Controller storage and system stats
-- **Storage health card**:
-  - Logging mount status + free space
-  - Sync mount status + free space
-  - Remount button if storage issues detected
-  - Eject Sync Drive button for safe USB removal
+- **Simple over clever** - Direct service calls, no unnecessary abstractions
+- **Singletons are fine** - For this app scale (~9k lines)
+- **No protocol ceremony** - Add protocols only when testing requires mocking
+- **Feature-based folders** - Each feature is self-contained
 
-### Record View
-- Start/stop recording (test mode or via controller)
-- Real-time sensor data display
-- Supported sensors:
-  - Accelerometer
-  - Gyroscope
-  - Magnetometer
-  - Barometer
-  - GPS
-  - Device Motion (attitude, rotation)
-  - AirPods Motion
-  - Heading (compass)
-  - Gravity (separated from Device Motion)
-  - Orientation (yaw, roll, pitch, quaternion)
-
-### Sessions View
-- List of recorded sessions
-- Session details:
-  - Duration
-  - Sensor data counts
-  - Data visualization
-- **Sync to Controller**:
-  - Preflight checks (camera sync status)
-  - Upload phone sensor CSVs
-  - Triggers post-processing on ctlr
-
-## Data Flow
-
-### Recording
-```
-1. User starts recording (or ctlr triggers via UUID)
-2. SensorService captures data at configured Hz
-3. Data buffered in memory
-4. Periodically flushed to CSV files
-5. Session saved to SwiftData
-```
-
-### Sync
-```
-1. User opens session detail
-2. App fetches /api/sync/status from ctlr
-3. Shows camera sync status (per camera)
-4. If all cameras synced:
-   a. User taps "Upload Phone Data"
-   b. App POSTs CSVs to /api/sync/phone
-   c. ctlr saves to /mnt/logging/phone/{uuid}/
-   d. ctlr triggers postprocess.py
-5. Session marked as synced
-```
-
-### Storage Health
-```
-1. StatusView polls /api/storage/status
-2. Shows mount status for logging + sync drives
-3. If unhealthy, displays "Remount" button
-4. User taps button → POST /api/storage/remount
-5. ctlr unmounts and remounts drives
-6. Status refreshes automatically
-
-Safe Drive Removal:
-1. User taps "Eject Sync Drive" button
-2. App POSTs to /api/storage/unmount?mount=sync
-3. ctlr flushes buffers and unmounts exFAT drive
-4. User can safely remove USB drive
-```
-
-## File Structure
+## Project Structure
 
 ```
 discar/
-├── Features/
-│   ├── Status/
-│   │   ├── StatusView.swift        # Main status screen + StorageHealthCard
-│   │   └── StatusViewModel.swift   # Polling + state + remount
-│   │
-│   ├── Record/
-│   │   ├── RecordView.swift        # Recording UI
-│   │   └── RecordViewModel.swift   # Sensor coordination
-│   │
-│   ├── Sessions/
-│   │   ├── SessionsView.swift      # Session list
-│   │   ├── SessionDetailView.swift # Detail + sync card
-│   │   └── SensorDataView.swift    # Data visualization
-│   │
-│   └── Settings/
-│       └── SettingsView.swift      # App configuration
+├── App/
+│   └── discarApp.swift           # Entry point
 │
-├── Services/
-│   ├── SensorService.swift         # CoreMotion wrapper
-│   ├── StorageService.swift        # CSV + sync upload
-│   ├── OBDService.swift           # Bluetooth OBD-II
-│   └── ExportService.swift        # ZIP export
+├── Config/
+│   └── AppConfig.swift           # All settings in one place
+│
+├── Core/
+│   ├── Theme/
+│   │   └── AppTheme.swift        # Design system
+│   ├── Components/               # Reusable UI
+│   │   ├── MetricCard.swift      # Bold stat display (Fitness-style)
+│   │   ├── ProgressRing.swift    # Circular progress
+│   │   ├── StatusBadge.swift     # Connection indicators
+│   │   ├── ActionButton.swift    # Styled buttons
+│   │   ├── SensorHealthBar.swift # Sensor status
+│   │   └── StatCard.swift        # Simple stat card
+│   ├── State/
+│   │   ├── LoadState.swift       # Async loading state
+│   │   └── SensorHealth.swift    # Sensor health tracking
+│   └── Utilities/
+│       ├── Validators.swift      # IP, UUID validation
+│       └── Formatters.swift      # Duration, bytes, etc.
 │
 ├── Models/
-│   ├── Session.swift              # SwiftData model
-│   └── SensorData.swift           # Sensor data types + CSV
+│   ├── Session.swift             # SwiftData model
+│   ├── SensorData.swift          # CSV data types
+│   └── SensorType.swift          # Sensor enumeration
 │
-└── App/
-    └── discarApp.swift            # App entry point
+├── Services/
+│   ├── SensorManager.swift       # iPhone sensor recording
+│   ├── StorageService.swift      # CSV I/O + sync uploads
+│   ├── ExportService.swift       # ZIP export
+│   ├── Logger.swift              # Remote logging
+│   ├── Network/
+│   │   ├── APIClient.swift       # HTTP requests
+│   │   └── WebSocketService.swift # Real-time status
+│   └── Watch/
+│       └── WatchCoordinator.swift # Watch communication
+│
+└── Features/
+    ├── Status/                   # System monitoring
+    ├── Record/                   # Recording control
+    ├── Sessions/                 # Session browser
+    └── Settings/                 # Configuration
 ```
+
+## Key Services
+
+| Service | Purpose |
+|---------|---------|
+| `SensorManager` | Records 10 sensors simultaneously at 1Hz |
+| `StorageService` | CSV file I/O, session sync to controller |
+| `APIClient` | All HTTP requests to controller |
+| `WebSocketService` | Real-time status updates |
+| `WatchCoordinator` | Apple Watch communication |
+| `RemoteLogger` | Fire-and-forget logging to controller |
+
+## Sensors Recorded
+
+| Sensor | Data |
+|--------|------|
+| Accelerometer | x, y, z (g) |
+| Gyroscope | x, y, z (rad/s) |
+| Magnetometer | x, y, z (μT) |
+| Barometer | pressure, altitude |
+| GPS | lat, lon, speed, course |
+| Device Motion | attitude, quaternion, user accel |
+| Heading | magnetic, true, accuracy |
+| Gravity | x, y, z |
+| Orientation | roll, pitch, yaw |
+| Headphone Motion | AirPods motion |
+
+## Data Format
+
+CSV with Melbourne timezone timestamps:
+```csv
+time,datetime,x,y,z
+0.0,2025-04-24 14:30:00.123,0.123,-0.456,9.81
+```
+
+Session folder:
+```
+Documents/Sessions/{UUID}/
+├── accelerometer.csv
+├── gyroscope.csv
+├── ...
+├── metadata.json
+└── watch/              # Watch data
+    └── accelerometer.csv
+```
+
+## Controller API
+
+### WebSocket (Real-time)
+`ws://{ip}:8000/ws/status`
+
+| Message | Data |
+|---------|------|
+| `initial` | Full state snapshot |
+| `controller` | ready, recording, uuid, duration |
+| `camera` | name, state, cpu, temp |
+| `system` | cpu%, mem%, temp |
+| `can` | connected, frame_count |
+| `storage` | mount status, free space |
+
+### REST
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/status` | GET | Full status |
+| `/api/record/start?uuid={uuid}` | POST | Start recording |
+| `/api/record/stop` | POST | Stop recording |
+| `/api/sync/phone` | POST | Upload session |
 
 ## Configuration
 
-Settings screen allows:
-- **Controller IP**: Default `192.168.8.145`
-- **OBD Service**: Enable/disable Bluetooth OBD
-- **Test Connection**: Verify controller connectivity
+All settings centralized in `AppConfig.swift`:
+- Controller IP (default: `192.168.8.145`)
+- Sensor frequency (1 Hz)
+- Buffer flush interval (10s)
+- API timeouts
 
-## Sensor Data Format
+## UI Design
 
-All sensor data saved as CSV. Every file includes:
-- `time`: Seconds elapsed since recording start
-- `datetime`: Melbourne timezone timestamp (YYYY-MM-DD HH:mm:ss.SSS)
+Inspired by Apple Fitness:
+- Bold metrics with `MetricCard`
+- Circular progress with `ProgressRing`
+- Clean status indicators with `StatusBadge`
+- System colors for light/dark mode
 
-| Sensor | Columns |
-|--------|---------|
-| Accelerometer | time, datetime, x, y, z |
-| Gyroscope | time, datetime, x, y, z |
-| Magnetometer | time, datetime, x, y, z |
-| Barometer | time, datetime, pressure, relativeAltitude |
-| GPS | time, datetime, lat, lon, altitude, speed, course, horizontalAccuracy, ... |
-| Device Motion | time, datetime, roll, pitch, yaw, qx, qy, qz, qw, rotMatrix, userAccel, gravity, rotRate, magField, heading |
-| Headphone Motion | time, datetime, (same as Device Motion) |
-| Heading | time, datetime, magneticHeading, trueHeading, accuracy, x, y, z |
-| **Gravity** | time, datetime, x, y, z |
-| **Orientation** | time, datetime, yaw, roll, pitch, qx, qy, qz, qw |
+## Development
 
-## Session Storage
-
-```
-Documents/Sessions/{date}_{shortid}/
-├── accelerometer.csv
-├── gyroscope.csv
-├── magnetometer.csv
-├── barometer.csv
-├── gps.csv
-├── devicemotion.csv
-├── headphonemotion.csv
-├── heading.csv
-├── gravity.csv         # Separated from devicemotion
-├── orientation.csv     # Separated from devicemotion
-└── metadata.json
+### Mock Server
+```bash
+cd ~/syncdrivenet/mock_ctlr
+source venv/bin/activate
+python server.py
 ```
 
-Note: `{shortid}` is the first 6 characters of the controller's recording UUID.
+### Build
+- Xcode 15+
+- iOS 17+ / watchOS 10+
+- Pure Swift, no external dependencies
 
-## Sync Preflight Checks
+## Watch App
 
-Before uploading phone data, the app verifies:
-1. Recording is stopped
-2. No cameras actively syncing
-3. All camera segments received on ctlr
-4. Storage mounts are healthy
+### Sensors Recorded
+- Heart Rate (via HealthKit workout)
+- Device Motion (accelerometer, gyroscope, magnetometer fused)
+- Barometer (pressure, relative altitude)
+- Compass (heading)
 
-This ensures complete data before post-processing.
+### Communication Flow (Decoupled)
 
-## API Endpoints Used
+The watch uses a **decoupled flow** via `applicationContext` instead of direct messages. This provides:
+- Reliability: State persists even if watch app restarts
+- Independence: User controls watch recording manually
+- Simplicity: No complex handshakes or confirmations
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /api/status` | Poll camera/controller status |
-| `GET /api/sync/status` | Preflight check before upload |
-| `POST /api/sync/phone` | Upload phone sensor data |
-| `GET /api/storage/status` | Check SSD mount health |
-| `POST /api/storage/remount` | Remount stale drives |
-| `POST /api/storage/unmount?mount=sync` | Safely eject sync drive |
+**Phone State Publishing:**
+- Phone publishes state via `updateApplicationContext`:
+  - `phoneRecording`: Whether phone is recording
+  - `sessionID`: Current session UUID
+  - `timestamp`: State update time
+- Watch reads this state and displays it in a status panel
 
-## Dependencies
+**Watch Status Panel:**
+- Shows phone connection status (green/orange dot)
+- Shows phone recording state (Recording/Idle)
+- Shows session UUID (first 8 characters) when phone is recording
 
-- SwiftUI
-- SwiftData
-- CoreMotion
-- CoreLocation
-- CoreBluetooth (OBD)
+**Manual Watch Control:**
+- Start button: Enabled when phone is recording (uses phone's sessionID)
+- Stop button: Shown during watch recording
+- User has full control over watch recording lifecycle
+
+**Recording Flow:**
+1. User taps Record on iPhone
+2. Phone publishes state: `{phoneRecording: true, sessionID: uuid}`
+3. Phone shows prompt: "Open Watch app and tap Start"
+4. User opens Watch app, sees phone status panel
+5. User taps Start on Watch to begin watch recording
+6. User taps Stop on iPhone when done
+7. Phone publishes state: `{phoneRecording: false}`
+8. Phone shows prompt: "Open Watch app and tap Stop"
+9. User taps Stop on Watch to end watch recording
+10. Watch auto-syncs files to phone
+
+**File Sync (Watch → Phone):**
+- Triggered automatically after watch recording stops
+- Uses `WCSession.transferFile()` (background transfer)
+- Files saved to `Sessions/{uuid}/watch/` on phone
+
+**Manual Sync (Phone → Watch):**
+- Phone sends `{command: sendSession, sessionID: ...}`
+- Watch transfers all CSV files for that session
+
+## Documentation
+
+- `ARCHITECTURE.md` - Detailed architecture decisions
+- `REFACTORING.md` - Refactoring plan and rationale
+- `mock_ctlr/CTLR_MIGRATION.md` - WebSocket migration guide
+
+---
+
+## Changelog (April 2026)
+
+### UI Changes
+
+**Merged Record into Status Tab**
+- Record button now at top of Status tab
+- Removed separate Record tab (now 3 tabs: Status, Sessions, Settings)
+- Phone sensors displayed below record button in compact format
+
+**Settings Cleanup**
+- Removed Diagnostics section (sensor status + recheck button)
+
+**Sessions Tab**
+- Removed SyncStatusCard (Sync All button at top)
+
+**Status Tab Improvements**
+- CAN and System cards now uniform height (minHeight: 70)
+- Eject button disabled during recording with "Can't eject during recording" message
+- Compact phone sensors card showing active/inactive sensors
+
+**Record Button**
+- Updated to match AppTheme styling
+- Uses AppTheme.Colors, Typography, Spacing, Radius
+
+### Swift 6 Concurrency Fixes
+
+**APIClient.swift**
+- Moved response models to separate file (`Models/APIResponses.swift`)
+- Fixes "Main actor-isolated conformance of Decodable" errors
+- Response models are plain `Codable, Sendable` structs
+
+**AppConfig.swift**
+- All nested enums marked `Sendable`
+- All static properties marked `nonisolated`
+- Validation functions marked `nonisolated`
+
+**WatchCoordinator.swift**
+- Fixed `didReceive file` delegate to copy file synchronously before async Task
+- Prevents temp file deletion before copy completes
+
+### Code Cleanup
+
+**Deleted Files**
+- `HTTPServerService.swift` (unused)
+- `ConnectivityManager.swift` (duplicate of WatchCoordinator)
+- `WatchDataTransferManager.swift` (merged into WatchCoordinator)
+- `WatchTransferCard.swift` (unused)
+- `CANStatusCard.swift` (unused)
+- `LoadState.swift` (unused)
+- `Status/Components/` folder
+- `Sessions/Components/` folder
+
+**New Files**
+- `Models/APIResponses.swift` - API response models (separate from actor)
+- `Core/Components/ShareSheet.swift` - UIActivityViewController wrapper
+- `Core/Components/DocumentExporter.swift` - UIDocumentPickerViewController wrapper
+
+**RecordViewModel**
+- Made `modelContext` optional with `updateModelContext()` method
+- Supports lazy initialization for StatusView integration
+
+### Architecture
+
+```
+Status Tab (merged)
+├── RecordSection
+│   ├── Recording card (button, health bar, connections)
+│   └── SensorStatusCardCompact (below button)
+├── ConnectionCard
+├── ControllerCard
+├── CamerasCard
+├── CAN & System cards (HStack, uniform height)
+├── StorageCard (eject disabled during recording)
+└── SessionsCard
+```
+
+### Files Modified
+
+- `Features/Status/StatusView.swift` - Added RecordSection, compact sensors
+- `Features/Record/RecordView.swift` - Updated RecordButton styling
+- `Features/Record/RecordViewModel.swift` - Optional modelContext
+- `Features/Settings/SettingsView.swift` - Removed diagnostics
+- `Features/Sessions/SessionsView.swift` - Removed SyncStatusCard
+- `Core/MainTabView.swift` - Removed Record tab
+- `Core/Components/SensorStatusCard.swift` - Card-based design
+- `Services/Network/APIClient.swift` - Simplified, models moved out
+- `Services/Watch/WatchCoordinator.swift` - Fixed file receive
+- `Config/AppConfig.swift` - Swift 6 nonisolated fixes
+- `Services/Logger.swift` - nonisolated shared instance
+
+### Decoupled Watch Flow
+
+**WatchCoordinator.swift (iPhone)**
+- Removed `startRecording(sessionID:timeout:)` - no longer waits for watch
+- Removed `sendStatus()` - replaced with `publishRecordingState()`
+- Added `publishRecordingState(isRecording:sessionID:)` using `updateApplicationContext`
+
+**WatchConnectionManager.swift (Watch)**
+- Added `phoneIsRecording`, `phoneSessionID`, `phoneStateTimestamp` published properties
+- Added `session(_:didReceiveApplicationContext:)` delegate
+- Added `processPhoneState()` to handle applicationContext updates
+- Added `startWatchRecording()` and `stopWatchRecording()` for manual control
+- Reads existing applicationContext on activation
+
+**Watch ContentView.swift**
+- Added phone status panel showing connection and recording state
+- Added manual Start/Stop buttons for watch recording
+- Start button disabled until phone is recording
+- Displays phone's session UUID when available
+
+**RecordViewModel.swift**
+- Replaced watch synchronous start with `publishRecordingState()`
+- Replaced watch stop message with `publishRecordingState(isRecording: false)`
+- Added `showWatchStartPrompt` and `showWatchStopPrompt` alerts
+
+**StatusView.swift**
+- Added alerts for watch start/stop prompts

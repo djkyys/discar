@@ -9,6 +9,7 @@ import Foundation
 import Combine
 import HealthKit
 import CoreMotion
+import CoreLocation
 import os.log
 
 // Define an Actor for thread-safe data buffering
@@ -17,11 +18,11 @@ actor DataBuffer {
     var deviceMotionBuffer: [WatchDeviceMotionReading] = []
     var compassBuffer: [WatchCompassReading] = []
     var barometerBuffer: [WatchBarometerReading] = []
-    
+
     func appendHeartRate(_ reading: WatchHeartRateReading) {
         heartRateBuffer.append(reading)
     }
-    
+
     func appendDeviceMotion(_ reading: WatchDeviceMotionReading) {
         deviceMotionBuffer.append(reading)
     }
@@ -33,7 +34,7 @@ actor DataBuffer {
     func appendBarometer(_ reading: WatchBarometerReading) {
         barometerBuffer.append(reading)
     }
-    
+
     func flush() -> (
         [WatchHeartRateReading], [WatchDeviceMotionReading],
         [WatchCompassReading], [WatchBarometerReading]
@@ -42,13 +43,20 @@ actor DataBuffer {
         let motion = deviceMotionBuffer
         let comp = compassBuffer
         let baro = barometerBuffer
-        
+
         heartRateBuffer.removeAll()
         deviceMotionBuffer.removeAll()
         compassBuffer.removeAll()
         barometerBuffer.removeAll()
-        
+
         return (hr, motion, comp, baro)
+    }
+
+    func getAll() -> (
+        [WatchHeartRateReading], [WatchDeviceMotionReading],
+        [WatchCompassReading], [WatchBarometerReading]
+    ) {
+        return (heartRateBuffer, deviceMotionBuffer, compassBuffer, barometerBuffer)
     }
 }
 
@@ -168,10 +176,10 @@ class WatchSensorManager: NSObject, ObservableObject {
             logger.error("HealthKit authorization error: \(error.localizedDescription)")
         }
 
-        // Location Permission for Compass (separate from HealthKit)
+        // Location Permission for Compass and GPS (separate from HealthKit)
         if locationManager.authorizationStatus == .notDetermined {
-            locationManager.requestWhenInUseAuthorization()
-            logger.info("Location permission requested")
+            locationManager.requestAlwaysAuthorization()
+            logger.info("Location permission requested (Always)")
         }
     }
     
@@ -247,86 +255,111 @@ class WatchSensorManager: NSObject, ObservableObject {
             }
             
             workoutSession?.startActivity(with: date)
-            
-            // Reverted to completion handler pattern for backward compatibility
-            builder?.beginCollection(withStart: date) { [weak self] (success, error) in
-                guard let self = self else { return }
-                
-                if success {
-                    // Start non-HealthKit sensors
-                    self.startSensors()
-                    
-                    Task { @MainActor in
-                        self.isRecording = true
-                        self.startTimer()
-                        let action = resume ? "Resumed" : "Started"
-                        self.logger.info("Recording \(action) with Session ID: \(self.sessionID ?? "unknown")")
-                    }
-                } else {
-                    self.logger.error("Failed to begin collection: \(error?.localizedDescription ?? "unknown error")")
-                    self.workoutSession?.end()
-                }
+
+            // Begin collection wrapped in continuation
+            guard let builder = builder else {
+                logger.error("Builder not available")
+                workoutSession?.end()
+                return
             }
-            
+
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    builder.beginCollection(withStart: date) { success, error in
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                        } else if success {
+                            continuation.resume()
+                        } else {
+                            continuation.resume(throwing: NSError(domain: "WatchSensorManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to begin collection"]))
+                        }
+                    }
+                }
+                startSensors()
+                isRecording = true
+                startTimer()
+                let action = resume ? "Resumed" : "Started"
+                logger.info("Recording \(action) with Session ID: \(sessionID ?? "unknown")")
+            } catch {
+                logger.error("Failed to begin collection: \(error.localizedDescription)")
+                workoutSession?.end()
+            }
+
         } catch {
-            logger.error("Failed to start workout session or begin collection: \(error.localizedDescription)")
+            logger.error("Failed to start workout session: \(error.localizedDescription)")
         }
     }
     
     func stopRecording() async {
-        logger.info("⏹️ stopRecording() called - isRecording: \(self.isRecording)")
-        
+        logger.info("stopRecording() called - isRecording: \(self.isRecording)")
+
         guard self.isRecording else {
-            logger.info("⏹️ stopRecording() - SKIPPED (not recording)")
+            logger.info("stopRecording() - SKIPPED (not recording)")
             return
         }
-        
+
         let date = Date()
-        
+
         // Stop Motion sensors immediately
         stopSensors()
-        
+
         // End the Workout Session activity
         workoutSession?.end()
-        
-        // Step 1: End collection using the completion handler
-        builder?.endCollection(withEnd: date) { [weak self] (success, error) in
-            guard let self = self else { return }
-            
-            if success {
-                // Step 2: Finish the workout using the completion handler
-                self.builder?.finishWorkout { (workout, finishError) in
-                    if let workout = workout {
-                        self.logger.info("Workout saved to HealthKit: \(workout)")
-                        
-                        Task {
-                            await self.flushAndResetState()
-                        }
+
+        // End collection and finish workout
+        guard let builder = builder else {
+            await flushAndResetState()
+            return
+        }
+
+        do {
+            // End collection wrapped in continuation
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                builder.endCollection(withEnd: date) { success, error in
+                    if let error = error {
+                        continuation.resume(throwing: error)
                     } else {
-                        self.logger.error("Failed to finish workout: \(finishError?.localizedDescription ?? "unknown error")")
-                        Task {
-                            await self.flushAndResetState()
-                        }
-                    }
-                }
-            } else {
-                self.logger.error("Failed to end collection: \(error?.localizedDescription ?? "unknown error")")
-                self.builder?.finishWorkout { (workout, _) in
-                    Task {
-                        await self.flushAndResetState()
+                        continuation.resume()
                     }
                 }
             }
+
+            // Finish workout wrapped in continuation
+            let workout: HKWorkout? = try await withCheckedThrowingContinuation { continuation in
+                builder.finishWorkout { workout, error in
+                    if let error = error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: workout)
+                    }
+                }
+            }
+            if let workout = workout {
+                logger.info("Workout saved to HealthKit: \(workout)")
+            }
+        } catch {
+            logger.error("Failed to end workout: \(error.localizedDescription)")
+        }
+
+        // Save sessionID before clearing state
+        let savedSessionID = sessionID
+
+        await flushAndResetState()
+
+        // Auto-sync: Transfer files to iPhone after stopping
+        if let sessionID = savedSessionID {
+            logger.info("Auto-syncing session \(sessionID) to iPhone")
+            WatchConnectionManager.shared.transferSessionFiles(sessionID: sessionID)
         }
     }
-    
+
     // MARK: - State Management Helper
-    
+
     @MainActor
     private func flushAndResetState() async {
         // Flush data
         await flushData()
-        
+
         // Reset State
         isRecording = false
         timer?.invalidate()
@@ -336,9 +369,9 @@ class WatchSensorManager: NSObject, ObservableObject {
         startDate = nil
         currentHeartRate = 0
         currentDuration = 0
-        
+
         logger.info("Recording stopped and state reset.")
-        
+
         // Clear Persisted State
         clearState()
     }
@@ -365,11 +398,13 @@ class WatchSensorManager: NSObject, ObservableObject {
             altimeter.startRelativeAltitudeUpdates(to: queue) { [weak self] (data: CMAltitudeData?, error: Error?) in
                 guard let self = self, let data = data, error == nil else { return }
                 let t = self.timestamp()
+                let dt = WatchTimeFormatter.format(Date())
                 let pressure = data.pressure.doubleValue
                 let relAltitude = data.relativeAltitude.doubleValue
                 Task {
                     await self.dataBuffer.appendBarometer(WatchBarometerReading(
-                        t: t,
+                        time: t,
+                        datetime: dt,
                         pressure: pressure,
                         relativeAltitude: relAltitude
                     ))
@@ -389,6 +424,7 @@ class WatchSensorManager: NSObject, ObservableObject {
     
     private func recordDeviceMotion(_ data: CMDeviceMotion) async {
         let t = timestamp()
+        let dt = WatchTimeFormatter.format(Date())
         let q = data.attitude.quaternion
         let rm = data.attitude.rotationMatrix
         let mf = data.magneticField
@@ -412,7 +448,8 @@ class WatchSensorManager: NSObject, ObservableObject {
         }()
 
         let reading = WatchDeviceMotionReading(
-            t: t,
+            time: t,
+            datetime: dt,
             attitude: WatchAttitude(
                 roll: data.attitude.roll,
                 pitch: data.attitude.pitch,
@@ -457,63 +494,117 @@ class WatchSensorManager: NSObject, ObservableObject {
         return Date().timeIntervalSince(start)
     }
     
+    private let flushInterval: Int = 30  // Flush to disk every 30 seconds
+
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.updateDuration()
+                guard let self = self else { return }
+                self.updateDuration()
+
+                // Periodic flush - saves data to disk to survive crashes
+                let seconds = Int(self.currentDuration)
+                if seconds > 0 && seconds % self.flushInterval == 0 {
+                    self.logger.debug("⏱️ Periodic flush at \(seconds)s")
+                    await self.flushData()
+                }
             }
         }
     }
-    
+
     private func updateDuration() {
         guard let start = startDate else { return }
         currentDuration = Date().timeIntervalSince(start)
     }
     
     // MARK: - Storage
-    
+
     private func flushData() async {
         guard let id = sessionID, let start = startDate else { return }
-        
+
         let fileManager = FileManager.default
         guard let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        
+
         let sessionDir = docURL.appendingPathComponent(id)
-        
+
         do {
             try fileManager.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-            
+
             let (hrData, motionData, compData, baroData) = await dataBuffer.flush()
-            
-            // Write JSONs
-            try writeJSON(hrData, to: sessionDir.appendingPathComponent("heart_rate.json"))
-            try writeJSON(motionData, to: sessionDir.appendingPathComponent("devicemotion.json"))
-            try writeJSON(compData, to: sessionDir.appendingPathComponent("compass.json"))
-            try writeJSON(baroData, to: sessionDir.appendingPathComponent("barometer.json"))
-            
+
+            // Write CSVs (matching iOS format)
+            try writeCSV(hrData, to: sessionDir.appendingPathComponent("watch_heartrate.csv"))
+            try writeCSV(motionData, to: sessionDir.appendingPathComponent("watch_wristmotion.csv"))
+            try writeCSV(compData, to: sessionDir.appendingPathComponent("watch_compass.csv"))
+            try writeCSV(baroData, to: sessionDir.appendingPathComponent("watch_barometer.csv"))
+
             // Metadata
             let meta = WatchSessionMetadata(
                 id: id,
                 date: ISO8601DateFormatter().string(from: start),
                 duration: currentDuration,
                 sensorFiles: [
-                    "heart_rate.json", "devicemotion.json", "compass.json", "barometer.json"
+                    "watch_heartrate.csv", "watch_wristmotion.csv", "watch_compass.csv", "watch_barometer.csv"
                 ]
             )
             try writeJSON(meta, to: sessionDir.appendingPathComponent("metadata.json"))
-            
+
             logger.info("Data flushed to \(sessionDir.path)")
-            
+
         } catch {
             logger.error("Failed to save data: \(error.localizedDescription)")
         }
     }
-    
+
+    private func writeCSV<T: WatchCSVConvertible>(_ data: [T], to url: URL) throws {
+        guard !data.isEmpty else { return }
+
+        let fileExists = FileManager.default.fileExists(atPath: url.path)
+
+        if !fileExists {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+
+        let fileHandle = try FileHandle(forWritingTo: url)
+        defer { try? fileHandle.close() }
+
+        fileHandle.seekToEndOfFile()
+
+        // Write header if new file
+        if !fileExists {
+            if let headerData = "\(T.csvHeader)\n".data(using: .utf8) {
+                fileHandle.write(headerData)
+            }
+        }
+
+        // Write rows
+        for item in data {
+            if let rowData = "\(item.csvRow)\n".data(using: .utf8) {
+                fileHandle.write(rowData)
+            }
+        }
+    }
+
     private func writeJSON<T: Encodable>(_ data: T, to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         let jsonData = try encoder.encode(data)
         try jsonData.write(to: url)
+    }
+
+    /// Get session folder URL for a given session ID (nonisolated for cross-actor access)
+    nonisolated func getSessionFolder(sessionID: String) -> URL? {
+        guard let docURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+        let sessionDir = docURL.appendingPathComponent(sessionID)
+        return FileManager.default.fileExists(atPath: sessionDir.path) ? sessionDir : nil
+    }
+
+    /// Get list of CSV files for a session (nonisolated for cross-actor access)
+    nonisolated func getSessionFiles(sessionID: String) -> [URL] {
+        guard let sessionDir = getSessionFolder(sessionID: sessionID) else { return [] }
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(at: sessionDir, includingPropertiesForKeys: nil) else { return [] }
+        return files.filter { $0.pathExtension == "csv" }
     }
 }
 
@@ -553,6 +644,7 @@ extension WatchSensorManager: HKLiveWorkoutBuilderDelegate {
             // Check if this is heart rate data using modern syntax
             if quantityType == HKQuantityType(.heartRate) {
                 let bpm = quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
+                let dt = WatchTimeFormatter.format(Date())
 
                 logger.info("Heart rate received: \(bpm) BPM")
 
@@ -561,7 +653,7 @@ extension WatchSensorManager: HKLiveWorkoutBuilderDelegate {
                 }
 
                 Task {
-                    await self.dataBuffer.appendHeartRate(WatchHeartRateReading(t: t, bpm: bpm))
+                    await self.dataBuffer.appendHeartRate(WatchHeartRateReading(time: t, datetime: dt, bpm: bpm))
                 }
             }
         }
@@ -577,12 +669,13 @@ extension WatchSensorManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard isRecording else { return }
         let t = timestamp()
+        let dt = WatchTimeFormatter.format(Date())
 
         let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         let accuracy = newHeading.headingAccuracy >= 0 ? newHeading.headingAccuracy : nil
 
         Task {
-            await dataBuffer.appendCompass(WatchCompassReading(t: t, heading: heading, accuracy: accuracy))
+            await dataBuffer.appendCompass(WatchCompassReading(time: t, datetime: dt, heading: heading, accuracy: accuracy))
         }
     }
 }

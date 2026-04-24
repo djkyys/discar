@@ -2,6 +2,8 @@
 //  RecordViewModel.swift
 //  discar
 //
+//  Recording orchestration - coordinates phone, watch, and controller
+//
 
 import SwiftUI
 import SwiftData
@@ -11,335 +13,295 @@ import OSLog
 @MainActor
 class RecordViewModel: ObservableObject {
 
-    // UI State
+    // MARK: - Published State
+
+    /// Recording state
     @Published var isRecording = false
     @Published var isStarting = false
     @Published var currentDuration: TimeInterval = 0
+
+    /// Error handling
     @Published var errorMessage: String?
     @Published var showError = false
 
-    // Session UUID from ctlr
+    /// Watch prompts (decoupled flow)
+    @Published var showWatchStartPrompt = false
+    @Published var showWatchStopPrompt = false
+
+    /// Sensor health from SensorManager
+    @Published var sensorHealth: SensorHealth?
+
+    /// CAN bus status (polled during recording)
+    @Published var canConnected = false
+    @Published var canFrameCount = 0
+    @Published var canFileSizeBytes = 0
+
+    /// Watch connectivity
+    @Published var isWatchConnected = false
+
+    /// Current session UUID (from controller)
     @Published var currentUUID: String?
 
-    private let sensorManager = SensorManager()
-    private var modelContext: ModelContext
-    private var currentSession: Session?
-    private var cancellables = Set<AnyCancellable>()
+    // MARK: - Computed Properties
 
-    private var isTestMode: Bool {
+    var durationFormatted: String {
+        Formatters.duration(currentDuration)
+    }
+
+    var canFileSizeFormatted: String {
+        Formatters.bytes(Int64(canFileSizeBytes))
+    }
+
+    var isTestMode: Bool {
         UserDefaults.standard.bool(forKey: "isTestMode")
     }
 
-    private var controllerIP: String {
-        UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
-    }
+    // MARK: - Private
 
-    private var baseURL: String {
-        "http://\(controllerIP):8000"
-    }
+    private let sensorManager = SensorManager()
+    private var modelContext: ModelContext?
+    private var currentSession: Session?
+    private var cancellables = Set<AnyCancellable>()
+    private var canPollTimer: Timer?
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "discar", category: "RecordViewModel")
 
-    init(modelContext: ModelContext) {
-        let start = CFAbsoluteTimeGetCurrent()
+    // MARK: - Initialization
+
+    init(modelContext: ModelContext? = nil) {
         self.modelContext = modelContext
 
-        // Auto-sync from SensorManager
+        // Bind to SensorManager state
         sensorManager.$isRecording.assign(to: &$isRecording)
         sensorManager.$currentDuration.assign(to: &$currentDuration)
+        sensorManager.$sensorHealth.assign(to: &$sensorHealth)
 
-        // Listen for Watch Commands
-        ConnectivityManager.shared.$receivedCommand
+        // Bind to WatchCoordinator state
+        WatchCoordinator.shared.$isReachable.assign(to: &$isWatchConnected)
+
+        // Listen for watch commands
+        WatchCoordinator.shared.$receivedCommand
             .compactMap { $0 }
             .sink { [weak self] command in
                 Task { @MainActor [weak self] in
-                    switch command {
-                    case .startRecording:
-                        await self?.startRecording()
-                    case .stopRecording:
-                        await self?.stopRecording()
-                    case .getStatus:
-                        ConnectivityManager.shared.sendStatusToWatch(
-                            isRecording: self?.isRecording ?? false,
-                            sessionID: self?.currentUUID
-                        )
-                    }
-                    ConnectivityManager.shared.receivedCommand = nil
+                    await self?.handleWatchCommand(command)
                 }
             }
             .store(in: &cancellables)
 
-        // Pre-warm sensors
+        // Pre-warm sensors for faster start
         Task {
             sensorManager.warmUp()
         }
-
-        let duration = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        logger.info("RecordViewModel.init took \(duration, format: .fixed(precision: 2))ms")
     }
 
-    var durationFormatted: String {
-        let h = Int(currentDuration) / 3600
-        let m = (Int(currentDuration) % 3600) / 60
-        let s = Int(currentDuration) % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    /// Update model context (called when view appears)
+    func updateModelContext(_ context: ModelContext) {
+        self.modelContext = context
     }
 
-    // MARK: - Recording Logic
+    // MARK: - Watch Command Handler
 
+    private func handleWatchCommand(_ command: WatchCoordinator.WatchCommand) async {
+        switch command {
+        case .startRecording:
+            await startRecording()
+        case .stopRecording:
+            await stopRecording()
+        case .getStatus:
+            WatchCoordinator.shared.sendStatus(
+                isRecording: isRecording,
+                duration: currentDuration,
+                sessionID: currentUUID
+            )
+        }
+        // Clear the command
+        WatchCoordinator.shared.receivedCommand = nil
+    }
+
+    // MARK: - Recording Control
+
+    /// Start synchronized recording across phone, watch, and controller
     func startRecording() async {
         isStarting = true
         errorMessage = nil
 
-        // 1. Check Readiness
+        // Step 1: Check controller readiness
         do {
-            try await checkReadiness()
+            let status = try await APIClient.shared.getStatus()
+
+            if status.recording {
+                throw RecordingError.alreadyRecording
+            }
+
+            if !status.ready {
+                let notReady = status.cameras.filter { !$0.connected }
+                let names = notReady.map { $0.name }.joined(separator: ", ")
+                throw RecordingError.camerasNotReady(names)
+            }
+
         } catch {
             if !isTestMode {
                 logger.error("Readiness check failed: \(error.localizedDescription)")
-                showError(message: "System Not Ready: \(error.localizedDescription)")
+                showError("System Not Ready: \(error.localizedDescription)")
                 isStarting = false
                 return
-            } else {
-                logger.notice("Test Mode: Skipping Readiness Error: \(error.localizedDescription)")
             }
+            logger.notice("Test Mode: Skipping readiness check")
         }
 
-        // 2. Check Watch Connectivity (skip in Test Mode)
-        if !isTestMode && !ConnectivityManager.shared.isWatchConnected {
-            logger.error("Watch not connected")
-            showError(message: "Watch Not Connected. Please open the Watch App.")
-            isStarting = false
-            return
-        } else if isTestMode {
-            logger.notice("Test Mode: Skipping Watch connectivity check")
-        }
+        // Step 2: Generate session UUID
+        let uuid = UUID().uuidString
+        logger.info("Generated session UUID: \(uuid)")
+        RemoteLogger.shared.info("recording", "Generated UUID: \(uuid.prefix(8))")
 
-        // 3. Start Recording via ctlr API - get UUID from response
+        // Step 3: Publish state to watch (decoupled flow)
+        // Watch will show phone status and user can manually start watch recording
+        logger.info("Publishing recording state to watch...")
+        WatchCoordinator.shared.publishRecordingState(isRecording: true, sessionID: uuid)
+        showWatchStartPrompt = true
+        logger.info("Watch state published - user can now start watch recording")
+
+        // Step 4: Start Controller
         do {
-            let startResponse = try await sendStartCommand()
-            currentUUID = startResponse.uuid
-            logger.info("Recording started with UUID: \(startResponse.uuid)")
+            try await APIClient.shared.startRecording(uuid: uuid)
+            currentUUID = uuid
+            logger.info("Controller started with UUID: \(uuid)")
+            RemoteLogger.shared.info("recording", "Controller started")
         } catch {
             if !isTestMode {
-                logger.error("Start failed: \(error.localizedDescription)")
-                showError(message: "Failed to start cameras: \(error.localizedDescription)")
+                logger.error("Controller start failed: \(error.localizedDescription)")
+                WatchCoordinator.shared.sendStatus(isRecording: false)
+                showError("Failed to start cameras: \(error.localizedDescription)")
                 isStarting = false
                 return
-            } else {
-                logger.notice("Test Mode: Skipping Start Error: \(error.localizedDescription)")
-                // Generate test session ID
-                let timestamp = Int(Date().timeIntervalSince1970)
-                currentUUID = "test-\(timestamp)"
             }
+            currentUUID = uuid
         }
 
-        // 4. Start Local Recording with UUID from ctlr
+        // Step 5: Start Phone sensors
         let session = Session(date: Date(), externalUUID: currentUUID)
         currentSession = session
 
         do {
             try await StorageService.shared.createSessionFolder(session: session)
             sensorManager.startRecording(session: session)
+            logger.info("Phone recording started")
 
-            logger.info("Local recording started: \(session.id.uuidString)")
-
-            // Notify Watch with Session ID (use ctlr UUID)
-            ConnectivityManager.shared.sendStatusToWatch(isRecording: true, sessionID: currentUUID)
-
-            // Start OBD Recording
-            if !isTestMode {
-                OBDService.shared.startSession(sessionID: currentUUID ?? session.id.uuidString)
-            } else {
-                logger.notice("Test Mode: Skipping OBD start command")
-            }
+            // Start CAN polling
+            startCANPolling()
 
         } catch {
-            logger.error("Failed to start local recording: \(error.localizedDescription)")
-            showError(message: "Failed to start sensors: \(error.localizedDescription)")
-            ConnectivityManager.shared.sendErrorToWatch("Sensor Error")
+            logger.error("Failed to start sensors: \(error.localizedDescription)")
+            showError("Failed to start sensors: \(error.localizedDescription)")
+            WatchCoordinator.shared.sendError("Sensor Error")
         }
 
         isStarting = false
     }
 
+    /// Stop synchronized recording
     func stopRecording() async {
-        // 1. Stop Local Sensors First (Secure the data)
+        RemoteLogger.shared.info("recording", "Stopping session: \(currentUUID?.prefix(8) ?? "none")")
+
+        // Step 1: Publish stop state to watch (decoupled flow)
+        // Watch will show phone status and user can manually stop watch recording
+        logger.info("Publishing stop state to watch...")
+        WatchCoordinator.shared.publishRecordingState(isRecording: false)
+        showWatchStopPrompt = true
+
+        // Step 2: Stop Phone sensors
         await sensorManager.stopRecording()
 
-        // Notify Watch
-        ConnectivityManager.shared.sendStatusToWatch(isRecording: false)
+        // Step 3: Stop CAN polling
+        stopCANPolling()
+        canConnected = false
+        canFrameCount = 0
+        canFileSizeBytes = 0
 
-        // Stop OBD Recording
-        if !isTestMode {
-            OBDService.shared.stopSession()
-        } else {
-            logger.notice("Test Mode: Skipping OBD stop command")
-        }
-
-        // Save session locally
-        if let session = currentSession {
+        // Step 4: Save session to SwiftData
+        if let session = currentSession, let modelContext = modelContext {
             session.duration = currentDuration
             modelContext.insert(session)
 
             do {
                 try modelContext.save()
-                logger.info("Session saved: \(session.id.uuidString), ctlr UUID: \(self.currentUUID ?? "none")")
+                logger.info("Session saved: \(session.id.uuidString)")
             } catch {
                 logger.error("Failed to save session: \(error.localizedDescription)")
             }
         }
 
-        // 2. Stop via ctlr API
+        // Step 5: Stop Controller
         do {
-            let stopResponse = try await sendStopCommand()
-            logger.info("Recording stopped: \(stopResponse.uuid), duration: \(stopResponse.duration)s")
+            try await APIClient.shared.stopRecording()
+            logger.info("Controller stopped")
+            RemoteLogger.shared.info("recording", "Stopped successfully")
         } catch {
-            logger.error("Stop warning: \(error.localizedDescription)")
+            logger.warning("Controller stop warning: \(error.localizedDescription)")
         }
 
         currentSession = nil
         currentUUID = nil
     }
 
-    private func showError(message: String) {
-        self.errorMessage = message
-        self.showError = true
-    }
+    // MARK: - CAN Polling
 
-    // MARK: - API Calls
-
-    private func checkReadiness() async throws {
-        guard let url = URL(string: "\(baseURL)/api/status") else {
-            throw CtlrError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5.0
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        if let jsonString = String(data: data, encoding: .utf8) {
-            logger.info("Status Response: \(jsonString)")
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw CtlrError.serverError
-        }
-
-        let status = try JSONDecoder().decode(CtlrStatusResponse.self, from: data)
-
-        if status.recording {
-            throw CtlrError.alreadyRecording
-        }
-
-        if !status.ready {
-            let notReady = status.cameras.filter { !$0.connected || $0.state != "idle" }
-            let names = notReady.map { $0.name }.joined(separator: ", ")
-            throw CtlrError.camerasNotReady(names)
-        }
-    }
-
-    private func sendStartCommand() async throws -> CtlrStartResponse {
-        guard let url = URL(string: "\(baseURL)/api/record/start") else {
-            throw CtlrError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10.0
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw CtlrError.serverError
-        }
-
-        if httpResponse.statusCode == 200 {
-            return try JSONDecoder().decode(CtlrStartResponse.self, from: data)
-        } else if httpResponse.statusCode == 409 {
-            if let errorResponse = try? JSONDecoder().decode(CtlrErrorResponse.self, from: data) {
-                throw CtlrError.custom(errorResponse.detail)
-            }
-            throw CtlrError.alreadyRecording
-        } else if httpResponse.statusCode == 503 {
-            if let errorResponse = try? JSONDecoder().decode(CtlrErrorResponse.self, from: data) {
-                throw CtlrError.camerasNotReady(errorResponse.detail)
+    private func startCANPolling() {
+        canPollTimer = Timer.scheduledTimer(
+            withTimeInterval: AppConfig.Recording.canPollInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.fetchCANStatus()
             }
         }
-
-        throw CtlrError.serverError
+        // Initial fetch
+        Task { await fetchCANStatus() }
     }
 
-    private func sendStopCommand() async throws -> CtlrStopResponse {
-        guard let url = URL(string: "\(baseURL)/api/record/stop") else {
-            throw CtlrError.invalidURL
+    private func stopCANPolling() {
+        canPollTimer?.invalidate()
+        canPollTimer = nil
+    }
+
+    private func fetchCANStatus() async {
+        do {
+            let status = try await APIClient.shared.getCANStatus()
+            canConnected = status.connected
+            canFrameCount = status.frameCount
+            canFileSizeBytes = status.fileSizeBytes
+        } catch {
+            // Silently fail - CAN status is non-critical
         }
+    }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 15.0
+    // MARK: - Error Handling
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw CtlrError.serverError
-        }
-
-        return try JSONDecoder().decode(CtlrStopResponse.self, from: data)
+    private func showError(_ message: String) {
+        errorMessage = message
+        showError = true
     }
 }
 
-// MARK: - Models & Errors
+// MARK: - Recording Errors
 
-enum CtlrError: LocalizedError {
-    case invalidURL
-    case serverError
+enum RecordingError: LocalizedError {
     case alreadyRecording
     case camerasNotReady(String)
-    case custom(String)
+    case watchNotResponding
+    case controllerUnreachable
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL: return "Invalid Controller URL"
-        case .serverError: return "Controller Error or Unreachable"
-        case .alreadyRecording: return "System is already recording"
-        case .camerasNotReady(let names): return "Cameras not ready: \(names)"
-        case .custom(let msg): return msg
+        case .alreadyRecording:
+            return "System is already recording"
+        case .camerasNotReady(let names):
+            return "Cameras not ready: \(names)"
+        case .watchNotResponding:
+            return "Watch not responding"
+        case .controllerUnreachable:
+            return "Controller unreachable"
         }
     }
-}
-
-// GET /api/status
-struct CtlrStatusResponse: Codable {
-    let ready: Bool
-    let recording: Bool
-    let uuid: String?
-    let duration: Int
-    let cameras: [CtlrCameraStatus]
-}
-
-struct CtlrCameraStatus: Codable {
-    let name: String
-    let connected: Bool
-    let state: String
-}
-
-// POST /api/record/start
-struct CtlrStartResponse: Codable {
-    let success: Bool
-    let uuid: String
-    let start_at: Int
-}
-
-// POST /api/record/stop
-struct CtlrStopResponse: Codable {
-    let success: Bool
-    let uuid: String
-    let duration: Int
-}
-
-// Error response
-struct CtlrErrorResponse: Codable {
-    let detail: String
 }

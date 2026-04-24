@@ -4,15 +4,13 @@
 //
 
 import SwiftUI
-import CoreMotion
-import CoreLocation
 
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
-    @StateObject private var httpServer = HTTPServerService.shared
     @EnvironmentObject var appState: AppState
     @AppStorage("isTestMode") private var isTestMode = false // New Storage
     @State private var showPrivacyPolicy = false
+    @FocusState private var isIPFieldFocused: Bool
     
     var body: some View {
         NavigationStack {
@@ -24,33 +22,6 @@ struct SettingsView: View {
                         value: viewModel.appVersion,
                         icon: "info.circle"
                     )
-                    
-                    // Sensor Diagnostics (New Section)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Diagnostics")
-                            .font(.headline)
-                            .padding(.horizontal)
-                        
-                        SensorStatusCard(
-                            sensorStatus: appState.sensorStatus,
-                            isLoading: appState.isCheckingSensors
-                        )
-                        
-                        Button(action: {
-                            appState.refreshSensors()
-                        }) {
-                            HStack {
-                                Image(systemName: "arrow.clockwise")
-                                Text("Recheck Sensors")
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.blue)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue.opacity(0.1))
-                            .cornerRadius(12)
-                        }
-                    }
                     
                     // Preferences Section
                     VStack(alignment: .leading, spacing: 16) {
@@ -84,6 +55,29 @@ struct SettingsView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .keyboardType(.decimalPad)
                                     .autocorrectionDisabled()
+                                    .focused($isIPFieldFocused)
+                                    .toolbar {
+                                        ToolbarItemGroup(placement: .keyboard) {
+                                            Spacer()
+                                            Button("Done") {
+                                                isIPFieldFocused = false
+                                            }
+                                        }
+                                    }
+
+                                // Validation indicator
+                                if !viewModel.controllerIP.isEmpty {
+                                    Image(systemName: viewModel.isValidIP ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(viewModel.isValidIP ? .green : .red)
+                                }
+                            }
+
+                            // IP validation message
+                            if !viewModel.controllerIP.isEmpty && !viewModel.isValidIP {
+                                Text("Enter a valid IP address (e.g., 192.168.8.145)")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .padding(.leading, 48)
                             }
 
                             // Connection Test Button
@@ -106,7 +100,7 @@ struct SettingsView: View {
                                 .background(Color.blue)
                                 .cornerRadius(8)
                             }
-                            .disabled(viewModel.isTestingConnection)
+                            .disabled(viewModel.isTestingConnection || !viewModel.isValidIP)
 
                             // Connection Status
                             if let status = viewModel.connectionStatus {
@@ -145,52 +139,6 @@ struct SettingsView: View {
                             isOn: $isTestMode
                         )
 
-                        // OBD Service Toggle
-                        ToggleCard(
-                            title: "OBD Service",
-                            icon: "car.fill",
-                            isOn: Binding(
-                                get: { OBDService.shared.isEnabled },
-                                set: { OBDService.shared.setEnabled($0) }
-                            )
-                        )
-
-                        // HTTP Server Toggle
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "network")
-                                    .font(.system(size: 20))
-                                    .foregroundStyle(.blue)
-                                    .frame(width: 40)
-
-                                Text("HTTP Data Server")
-                                    .font(.body)
-
-                                Spacer()
-
-                                Toggle("", isOn: Binding(
-                                    get: { httpServer.isRunning },
-                                    set: { newValue in
-                                        if newValue {
-                                            httpServer.start()
-                                        } else {
-                                            httpServer.stop()
-                                        }
-                                    }
-                                ))
-                            }
-
-                            if httpServer.isRunning {
-                                Text(httpServer.serverURL)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .padding(.leading, 48)
-                            }
-                        }
-                        .padding()
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
                     }
                     
                     // Actions Section

@@ -2,6 +2,7 @@
 //  StatusViewModel.swift
 //  discar
 //
+//  ViewModel for Status panel - uses WebSocket with HTTP fallback
 
 import Foundation
 import Combine
@@ -9,204 +10,48 @@ import SwiftData
 
 @MainActor
 class StatusViewModel: ObservableObject {
-    // MARK: - Published Properties (UI State)
+
+    // MARK: - Connection State
+
+    @Published var connectionState: WebSocketService.ConnectionState = .disconnected
+
+    // MARK: - Component States
+
+    @Published var controller: WebSocketService.ControllerStatus?
+    @Published var cameras: [WebSocketService.CameraStatus] = []
+    @Published var system: WebSocketService.SystemStatus?
+    @Published var can: WebSocketService.CANStatus?
+    @Published var storage: WebSocketService.StorageStatus?
+    @Published var syncProgress: [String: WebSocketService.SyncProgress] = [:]
+
+    // MARK: - Session Stats (local data)
+
     @Published var totalSessions: Int = 0
     @Published var totalTimeInSeconds: Int = 0
     @Published var averageSessionInSeconds: Int = 0
     @Published var lastSessionDate: String? = nil
 
-    // Controller Status
-    @Published var ctlrStatus: CtlrStatus = .disconnected
-    @Published var ctlrMessage: String = "Not Connected"
+    // MARK: - Storage Actions State
 
-    // Live Data
-    @Published var connectedCameras: String = "-/-"
-    @Published var isRecording: Bool = false
-    @Published var recordingDuration: Int = 0
-    @Published var recordingUUID: String?
-
-    // Camera List
-    @Published var cameraNodes: [CameraNode] = []
-
-    // System Stats
-    @Published var storageUsedGB: Double = 0
-    @Published var storageTotalGB: Double = 0
-    @Published var storagePercent: Double = 0
-    @Published var cpuPercent: Double = 0
-    @Published var memPercent: Double = 0
-    @Published var tempC: Double = 0
-
-    // CAN Bus Status
-    @Published var canConnected: Bool = false
-    @Published var canFrameCount: Int = 0
-
-    // Storage Health
-    @Published var storageHealthy: Bool = true
-    @Published var loggingMounted: Bool = true
-    @Published var loggingFreeGB: Double = 0
-    @Published var syncMounted: Bool = true
-    @Published var syncFreeGB: Double = 0
     @Published var isRemounting: Bool = false
     @Published var isUnmounting: Bool = false
     @Published var unmountMessage: String?
     @Published var storageError: String?
 
-    struct CameraNode: Identifiable {
-        let id = UUID()
-        let name: String
-        let connected: Bool
-        let state: String
-        let segment: Int?
-        let cpu: Double?
-        let ram: Double?
-        let diskFreeGB: Double?
-        let temp: Double?
-        // Sync status
-        let syncStatus: String?
-        let syncSegmentsSynced: Int?
-        let syncSegmentsQueued: Int?
-        let segmentsOnCtlr: Int?
-        let syncError: String?
+    // MARK: - Convenience Accessors
+
+    var isRecording: Bool {
+        controller?.recording ?? false
     }
 
-    // MARK: - Private Properties
-    private var modelContext: ModelContext?
-    private var pollTimer: AnyCancellable?
-
-    private var controllerIP: String {
-        UserDefaults.standard.string(forKey: "controllerIP") ?? "192.168.8.145"
+    var isReady: Bool {
+        controller?.ready ?? false
     }
 
-    private var baseURL: String {
-        "http://\(controllerIP):8000"
+    var connectedCameras: String {
+        let online = cameras.filter { $0.connected }.count
+        return "\(online)/\(cameras.count)"
     }
-
-    // MARK: - Enums
-    enum CtlrStatus {
-        case disconnected
-        case connecting
-        case ready
-        case recording
-        case error
-    }
-
-    // MARK: - Initialization & Context
-    func updateModelContext(_ context: ModelContext) {
-        self.modelContext = context
-    }
-
-    // MARK: - Polling Logic
-
-    func startPolling() {
-        // Poll every 5 seconds
-        pollTimer = Timer.publish(every: 5, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                Task { await self?.fetchStatus() }
-            }
-
-        // Initial fetch
-        Task {
-            await fetchStatus()
-            await fetchStorageStatus()
-        }
-    }
-
-    func stopPolling() {
-        pollTimer?.cancel()
-        pollTimer = nil
-    }
-
-    func fetchStatus() async {
-        guard let url = URL(string: "\(baseURL)/api/status") else {
-            ctlrStatus = .error
-            ctlrMessage = "Invalid URL"
-            return
-        }
-
-        if ctlrStatus == .disconnected {
-            ctlrStatus = .connecting
-            ctlrMessage = "Connecting..."
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5.0
-
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                ctlrStatus = .error
-                ctlrMessage = "Server Error"
-                return
-            }
-
-            let status = try JSONDecoder().decode(StatusAPIResponse.self, from: data)
-
-            // Update camera info
-            let totalCams = status.cameras.count
-            let onlineCams = status.cameras.filter { $0.connected }.count
-            connectedCameras = "\(onlineCams)/\(totalCams)"
-
-            cameraNodes = status.cameras.map { cam in
-                CameraNode(
-                    name: cam.name,
-                    connected: cam.connected,
-                    state: cam.state.capitalized,
-                    segment: cam.segment,
-                    cpu: cam.cpu,
-                    ram: cam.ram,
-                    diskFreeGB: cam.disk_free_gb,
-                    temp: cam.temp,
-                    syncStatus: cam.sync_status,
-                    syncSegmentsSynced: cam.sync_segments_synced,
-                    syncSegmentsQueued: cam.sync_segments_queued,
-                    segmentsOnCtlr: cam.segments_on_ctlr,
-                    syncError: cam.sync_error
-                )
-            }
-
-            // Update recording status
-            isRecording = status.recording
-            recordingDuration = status.duration
-            recordingUUID = status.uuid
-
-            // Update system stats
-            if let storage = status.storage {
-                storageUsedGB = storage.used_gb
-                storageTotalGB = storage.total_gb
-                storagePercent = storage.percent
-            }
-            if let system = status.system {
-                cpuPercent = system.cpu_percent
-                memPercent = system.mem_percent
-                tempC = system.temp_c ?? 0
-            }
-            if let can = status.can {
-                canConnected = can.connected
-                canFrameCount = can.frame_count
-            }
-
-            if status.recording {
-                ctlrStatus = .recording
-                ctlrMessage = "Recording (\(status.duration)s)"
-            } else if status.ready {
-                ctlrStatus = .ready
-                ctlrMessage = "System Ready"
-            } else {
-                ctlrStatus = .error
-                ctlrMessage = "Cameras Not Ready"
-            }
-
-        } catch {
-            ctlrStatus = .disconnected
-            ctlrMessage = "Connection Failed"
-            connectedCameras = "-/-"
-            cameraNodes = []
-        }
-    }
-
-    // MARK: - Session Data Logic
 
     var totalTimeFormatted: String {
         formatTime(totalTimeInSeconds)
@@ -216,10 +61,76 @@ class StatusViewModel: ObservableObject {
         formatTime(averageSessionInSeconds)
     }
 
-    func loadData() {
-        // Start polling when view appears
-        startPolling()
+    var recordingDuration: Int {
+        controller?.duration ?? 0
+    }
 
+    // MARK: - Private Properties
+
+    private var modelContext: ModelContext?
+    private var cancellables = Set<AnyCancellable>()
+    private let webSocket = WebSocketService.shared
+
+    private var baseURL: String {
+        AppConfig.Controller.baseURL
+    }
+
+    // MARK: - Initialization
+
+    init() {
+        setupBindings()
+    }
+
+    private func setupBindings() {
+        // Bind WebSocket state to local published properties
+        webSocket.$connectionState
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$connectionState)
+
+        webSocket.$controller
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$controller)
+
+        webSocket.$cameras
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$cameras)
+
+        webSocket.$system
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$system)
+
+        webSocket.$can
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$can)
+
+        webSocket.$storage
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$storage)
+
+        webSocket.$syncProgress
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$syncProgress)
+    }
+
+    // MARK: - Context
+
+    func updateModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
+
+    // MARK: - Connection Control
+
+    func connect() {
+        webSocket.connect()
+    }
+
+    func disconnect() {
+        webSocket.disconnect()
+    }
+
+    // MARK: - Session Data
+
+    func loadSessionStats() {
         guard let modelContext = modelContext else { return }
 
         let descriptor = FetchDescriptor<Session>(
@@ -243,7 +154,7 @@ class StatusViewModel: ObservableObject {
                 lastSessionDate = nil
             }
         } catch {
-            print("Error loading data: \(error)")
+            print("Error loading session stats: \(error)")
         }
     }
 
@@ -258,24 +169,7 @@ class StatusViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Storage Health
-
-    func fetchStorageStatus() async {
-        guard let url = URL(string: "\(baseURL)/api/storage/status") else { return }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let status = try JSONDecoder().decode(StorageStatusResponse.self, from: data)
-
-            storageHealthy = status.healthy
-            loggingMounted = status.logging.accessible
-            loggingFreeGB = status.logging.free_gb
-            syncMounted = status.sync.accessible
-            syncFreeGB = status.sync.free_gb
-        } catch {
-            storageHealthy = false
-        }
-    }
+    // MARK: - Storage Actions
 
     func remountStorage() async {
         guard !isRemounting else { return }
@@ -309,9 +203,8 @@ class StatusViewModel: ObservableObject {
             let result = try JSONDecoder().decode(RemountResponse.self, from: data)
 
             if result.success {
-                // Wait a moment for mounts to stabilize before refreshing
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                await fetchStorageStatus()
+                // Storage status will be updated via WebSocket
+                try? await Task.sleep(nanoseconds: 500_000_000)
             } else {
                 storageError = "Remount failed"
             }
@@ -357,9 +250,6 @@ class StatusViewModel: ObservableObject {
 
             if result.success {
                 unmountMessage = result.message ?? "Drive ejected safely"
-                // Wait a moment then refresh status
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second
-                await fetchStorageStatus()
             } else {
                 storageError = result.message ?? "Unmount failed"
             }
@@ -372,66 +262,7 @@ class StatusViewModel: ObservableObject {
     }
 }
 
-// MARK: - API Response Model
-
-private struct StatusAPIResponse: Codable {
-    let ready: Bool
-    let recording: Bool
-    let uuid: String?
-    let duration: Int
-    let cameras: [CameraStatus]
-    let storage: StorageInfo?
-    let system: SystemInfo?
-    let can: CANInfo?
-
-    struct CANInfo: Codable {
-        let connected: Bool
-        let frame_count: Int
-    }
-
-    struct CameraStatus: Codable {
-        let name: String
-        let connected: Bool
-        let state: String
-        let segment: Int?
-        let cpu: Double?
-        let ram: Double?
-        let disk_free_gb: Double?
-        let temp: Double?
-        // Sync status
-        let sync_status: String?
-        let sync_segments_synced: Int?
-        let sync_segments_queued: Int?
-        let segments_on_ctlr: Int?
-        let sync_error: String?
-    }
-
-    struct StorageInfo: Codable {
-        let used_gb: Double
-        let total_gb: Double
-        let percent: Double
-    }
-
-    struct SystemInfo: Codable {
-        let cpu_percent: Double
-        let mem_percent: Double
-        let temp_c: Double?
-    }
-}
-
-private struct StorageStatusResponse: Codable {
-    let logging: MountStatus
-    let sync: MountStatus
-    let healthy: Bool
-
-    struct MountStatus: Codable {
-        let path: String
-        let mounted: Bool
-        let accessible: Bool
-        let free_gb: Double
-        let total_gb: Double
-    }
-}
+// MARK: - Response Models
 
 private struct RemountResponse: Codable {
     let success: Bool

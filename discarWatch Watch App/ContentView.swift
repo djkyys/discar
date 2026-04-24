@@ -34,148 +34,116 @@ struct ContentView: View {
     }
 
     private var statusView: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                // Phone Status Panel
-                phoneStatusPanel
-
-                Divider()
-
-                // Watch Recording Section
-                if sensorManager.isRecording {
-                    watchRecordingView
-                } else {
-                    watchIdleView
-                }
+        VStack(spacing: 0) {
+            // Top half: iPhone status + sensors
+            VStack(spacing: 6) {
+                phoneStatusRow
+                sensorIndicators
             }
-            .padding()
+            .frame(maxHeight: .infinity)
+
+            // Bottom half: Record button
+            recordButton
+                .frame(maxHeight: .infinity)
         }
+        .padding()
     }
 
-    // MARK: - Phone Status Panel
+    // MARK: - Phone Status Row
 
-    private var phoneStatusPanel: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "iphone")
-                    .font(.caption)
-                Text("iPhone")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                Spacer()
+    private var phoneStatusRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "iphone")
+                .font(.caption2)
+
+            Circle()
+                .fill(connectionManager.isPhoneReachable ? .green : .orange)
+                .frame(width: 5, height: 5)
+
+            if connectionManager.phoneIsRecording {
                 Circle()
-                    .fill(connectionManager.isPhoneReachable ? .green : .orange)
-                    .frame(width: 6, height: 6)
-            }
-
-            HStack {
-                if connectionManager.phoneIsRecording {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 6, height: 6)
-                        Text("Recording")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    }
-                } else {
-                    Text("Idle")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+                    .fill(.red)
+                    .frame(width: 5, height: 5)
+                Text("REC")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.red)
                 if let sessionID = connectionManager.phoneSessionID {
-                    Text(String(sessionID.prefix(8)))
+                    Text(String(sessionID.prefix(6)))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-            }
-        }
-        .padding(8)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    // MARK: - Watch Recording View
-
-    private var watchRecordingView: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 10, height: 10)
-                Text("RECORDING")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.red)
-            }
-
-            Text(timeString(from: sensorManager.currentDuration))
-                .font(.system(.title2, design: .rounded))
-                .fontWeight(.bold)
-                .monospacedDigit()
-
-            HStack(spacing: 4) {
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(.red)
-                Text(String(format: "%.0f", sensorManager.currentHeartRate))
-                    .fontWeight(.medium)
-                Text("BPM")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.footnote)
-
-            // Stop Button
-            Button {
-                Task {
-                    await connectionManager.stopWatchRecording()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "stop.fill")
-                    Text("Stop")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-        }
-    }
-
-    // MARK: - Watch Idle View
-
-    private var watchIdleView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "applewatch")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
-
-            Text("Watch Ready")
-                .font(.headline)
-
-            // Start Button - always enabled, uses phone's UUID if available
-            Button {
-                Task {
-                    await connectionManager.startWatchRecording()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "record.circle")
-                    Text("Start")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(connectionManager.phoneIsRecording ? .green : .orange)
-
-            if connectionManager.phoneIsRecording {
-                Text("Will use iPhone session")
-                    .font(.caption2)
-                    .foregroundStyle(.green)
             } else {
-                Text("iPhone not recording")
+                Text("Idle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+
+    // MARK: - Sensor Indicators
+
+    private var sensorIndicators: some View {
+        HStack(spacing: 8) {
+            sensorDot("heart.fill", active: sensorManager.isRecording)
+            sensorDot("move.3d", active: sensorManager.isRecording)
+            sensorDot("barometer", active: sensorManager.isRecording)
+            sensorDot("location.north.fill", active: sensorManager.isRecording)
+            Spacer()
+        }
+    }
+
+    private func sensorDot(_ icon: String, active: Bool) -> some View {
+        Image(systemName: icon)
+            .font(.caption2)
+            .foregroundStyle(active ? .green : .secondary)
+    }
+
+    // MARK: - Record Button
+
+    private var recordButton: some View {
+        VStack(spacing: 4) {
+            if sensorManager.isRecording {
+                // Recording state
+                Text(timeString(from: sensorManager.currentDuration))
+                    .font(.system(.title3, design: .rounded))
+                    .fontWeight(.bold)
+                    .monospacedDigit()
+
+                HStack(spacing: 4) {
+                    Image(systemName: "heart.fill")
+                        .foregroundStyle(.red)
+                    Text("\(Int(sensorManager.currentHeartRate))")
+                        .fontWeight(.medium)
+                }
+                .font(.caption)
+
+                Button {
+                    Task { await connectionManager.stopWatchRecording() }
+                } label: {
+                    HStack {
+                        Image(systemName: "stop.fill")
+                        Text("Stop")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            } else {
+                // Idle state
+                Button {
+                    Task { await connectionManager.startWatchRecording() }
+                } label: {
+                    HStack {
+                        Image(systemName: "record.circle")
+                        Text("Start")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(connectionManager.phoneIsRecording ? .green : .orange)
             }
         }
     }

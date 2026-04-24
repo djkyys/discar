@@ -36,94 +36,94 @@ struct SessionDetailView: View {
                         if viewModel.accelerometerCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .accelerometer)) {
                                 SensorDataCard(
-                                    title: "Accelerometer",
-                                    icon: "figure.walk",
+                                    title: SensorType.accelerometer.displayName,
+                                    icon: SensorType.accelerometer.icon,
                                     count: viewModel.accelerometerCount,
-                                    color: .blue
+                                    color: SensorType.accelerometer.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.gyroscopeCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .gyroscope)) {
                                 SensorDataCard(
-                                    title: "Gyroscope",
-                                    icon: "rotate.3d",
+                                    title: SensorType.gyroscope.displayName,
+                                    icon: SensorType.gyroscope.icon,
                                     count: viewModel.gyroscopeCount,
-                                    color: .green
+                                    color: SensorType.gyroscope.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.magnetometerCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .magnetometer)) {
                                 SensorDataCard(
-                                    title: "Magnetometer",
-                                    icon: "scope",
+                                    title: SensorType.magnetometer.displayName,
+                                    icon: SensorType.magnetometer.icon,
                                     count: viewModel.magnetometerCount,
-                                    color: .purple
+                                    color: SensorType.magnetometer.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.barometerCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .barometer)) {
                                 SensorDataCard(
-                                    title: "Barometer",
-                                    icon: "barometer",
+                                    title: SensorType.barometer.displayName,
+                                    icon: SensorType.barometer.icon,
                                     count: viewModel.barometerCount,
-                                    color: .orange
+                                    color: SensorType.barometer.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.gpsCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .gps)) {
                                 SensorDataCard(
-                                    title: "GPS",
-                                    icon: "location.fill",
+                                    title: SensorType.gps.displayName,
+                                    icon: SensorType.gps.icon,
                                     count: viewModel.gpsCount,
-                                    color: .red
+                                    color: SensorType.gps.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.deviceMotionCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .deviceMotion)) {
                                 SensorDataCard(
-                                    title: "Device Motion",
-                                    icon: "arrow.trianglehead.2.clockwise.rotate.90",
+                                    title: SensorType.deviceMotion.displayName,
+                                    icon: SensorType.deviceMotion.icon,
                                     count: viewModel.deviceMotionCount,
-                                    color: .cyan
+                                    color: SensorType.deviceMotion.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.headphoneMotionCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .headphoneMotion)) {
                                 SensorDataCard(
-                                    title: "AirPods Motion",
-                                    icon: "airpods.gen3",
+                                    title: SensorType.headphoneMotion.displayName,
+                                    icon: SensorType.headphoneMotion.icon,
                                     count: viewModel.headphoneMotionCount,
-                                    color: .mint
+                                    color: SensorType.headphoneMotion.color
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        
+
                         if viewModel.headingCount > 0 {
                             NavigationLink(destination: SensorDataView(session: session, sensorType: .heading)) {
                                 SensorDataCard(
-                                    title: "Heading (Compass)",
-                                    icon: "location.north.fill",
+                                    title: SensorType.heading.displayName,
+                                    icon: SensorType.heading.icon,
                                     count: viewModel.headingCount,
-                                    color: .indigo
+                                    color: SensorType.heading.color
                                 )
                             }
                             .buttonStyle(.plain)
@@ -387,9 +387,9 @@ struct SensorDataCard: View {
 struct SyncCard: View {
     let session: Session
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var watchCoordinator = WatchCoordinator.shared
     @State private var isSyncing = false
     @State private var isCheckingPreflight = false
-    @State private var isRequestingWatchData = false
     @State private var syncResult: SyncResult?
     @State private var preflightStatus: PreflightStatus?
     @State private var watchStatus: WatchSyncStatus = .unknown
@@ -399,24 +399,26 @@ struct SyncCard: View {
         case error(String)
     }
 
-    enum WatchSyncStatus {
+    enum WatchSyncStatus: Equatable {
         case unknown
-        case notReachable
-        case reachable
-        case hasData
-        case transferring
+        case noData          // No watch data found for this session
+        case hasData         // Watch data already synced locally
+        case transferring(received: Int, expected: Int)
     }
 
     struct PreflightStatus {
         let recording: Bool
         let allSynced: Bool
         let anySyncing: Bool
+        let totalSegments: Int
         let cameras: [CameraSync]
 
         struct CameraSync {
             let name: String
             let connected: Bool
             let syncStatus: String
+            let segmentsOnCtlr: Int
+            let segmentsExpected: Int
             let segmentsPending: Int
         }
     }
@@ -427,10 +429,9 @@ struct SyncCard: View {
 
     private var canSync: Bool {
         guard let status = preflightStatus else { return false }
-        // Must have cameras synced AND watch must be reachable (unless already has data)
+        // Must have cameras synced - watch data is optional
         let camerasReady = !status.recording && status.allSynced && !status.anySyncing
-        let watchReady = watchStatus == .reachable || watchStatus == .hasData
-        return camerasReady && watchReady
+        return camerasReady
     }
 
     private var preflightMessage: String? {
@@ -442,9 +443,6 @@ struct SyncCard: View {
             if !pending.isEmpty {
                 return "Waiting: \(pending.map { $0.name }.joined(separator: ", "))"
             }
-        }
-        if watchStatus == .notReachable {
-            return "Connect Apple Watch to sync"
         }
         return nil
     }
@@ -479,14 +477,10 @@ struct SyncCard: View {
                     Text("Checking...")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                case .notReachable:
-                    Text("Not Connected")
+                case .noData:
+                    Text("No data")
                         .font(.caption2)
-                        .foregroundStyle(.red)
-                case .reachable:
-                    Text("Ready")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.secondary)
                 case .hasData:
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
@@ -495,12 +489,17 @@ struct SyncCard: View {
                             .foregroundStyle(.green)
                     }
                     .font(.caption2)
-                case .transferring:
+                case .transferring(let received, let expected):
                     HStack(spacing: 4) {
                         ProgressView()
                             .scaleEffect(0.6)
-                        Text("Transferring...")
-                            .foregroundStyle(.orange)
+                        if expected > 0 {
+                            Text("\(received)/\(expected)")
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("Syncing...")
+                                .foregroundStyle(.orange)
+                        }
                     }
                     .font(.caption2)
                 }
@@ -521,18 +520,42 @@ struct SyncCard: View {
                                 HStack(spacing: 4) {
                                     ProgressView()
                                         .scaleEffect(0.6)
-                                    Text("Syncing")
+                                    Text("\(cam.segmentsOnCtlr)/\(cam.segmentsExpected)")
                                         .font(.caption2)
                                         .foregroundStyle(.orange)
                                 }
-                            } else if cam.segmentsPending > 0 {
-                                Text("\(cam.segmentsPending) pending")
+                            } else if cam.syncStatus == "waiting" && cam.segmentsExpected > 0 {
+                                HStack(spacing: 4) {
+                                    ProgressView()
+                                        .scaleEffect(0.5)
+                                    Text("0/\(cam.segmentsExpected)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            } else if cam.syncStatus == "partial" || (cam.segmentsExpected > 0 && cam.segmentsPending > 0) {
+                                Text("\(cam.segmentsOnCtlr)/\(cam.segmentsExpected)")
                                     .font(.caption2)
                                     .foregroundStyle(.yellow)
-                            } else if cam.connected {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .font(.caption)
+                            } else if cam.syncStatus == "complete" || (cam.segmentsExpected > 0 && cam.segmentsPending == 0) {
+                                HStack(spacing: 4) {
+                                    Text("\(cam.segmentsOnCtlr)/\(cam.segmentsExpected)")
+                                        .font(.caption2)
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .font(.caption)
+                                }
+                            } else if cam.connected && cam.segmentsExpected == 0 {
+                                HStack(spacing: 4) {
+                                    ProgressView()
+                                        .scaleEffect(0.5)
+                                    Text("Waiting...")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("No data")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -543,10 +566,10 @@ struct SyncCard: View {
             // Upload button
             Button(action: { syncSession() }) {
                 HStack {
-                    if isSyncing || isRequestingWatchData {
+                    if isSyncing {
                         ProgressView()
                             .scaleEffect(0.8)
-                        Text(isRequestingWatchData ? "Getting Watch Data..." : "Uploading...")
+                        Text("Uploading...")
                     } else if isCheckingPreflight {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -564,7 +587,7 @@ struct SyncCard: View {
                 .background(canSync ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
                 .cornerRadius(8)
             }
-            .disabled(isSyncing || isCheckingPreflight || !canSync || isRequestingWatchData)
+            .disabled(isSyncing || isCheckingPreflight || !canSync)
 
             // Preflight warning
             if let msg = preflightMessage {
@@ -615,36 +638,67 @@ struct SyncCard: View {
         .task {
             await checkPreflight()
             await checkWatchStatus()
+
+            // Auto-poll sync status every 3s while not fully synced
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { break }
+
+                // Stop polling once all synced
+                if let status = preflightStatus, status.allSynced && watchStatus == .hasData {
+                    break
+                }
+
+                await checkPreflight()
+                await checkWatchStatus()
+            }
+        }
+        .onChange(of: watchCoordinator.isTransferring) {
+            Task { await checkWatchStatus() }
+        }
+        .onChange(of: watchCoordinator.receivedFileCount) {
+            Task { await checkWatchStatus() }
+        }
+        .onChange(of: watchCoordinator.transferComplete) {
+            Task { await checkWatchStatus() }
         }
     }
 
     private var watchStatusColor: Color {
         switch watchStatus {
         case .unknown: return .secondary
-        case .notReachable: return .red
-        case .reachable, .hasData: return .green
+        case .noData: return .secondary
+        case .hasData: return .green
         case .transferring: return .orange
         }
     }
 
     private func checkWatchStatus() async {
-        // Check if we already have watch data
+        let sessionID = session.externalUUID ?? session.id.uuidString
+
+        // Check if transfer is in progress for this session
+        if watchCoordinator.isTransferring && watchCoordinator.currentTransferSessionID == sessionID {
+            await MainActor.run {
+                watchStatus = .transferring(
+                    received: watchCoordinator.receivedFileCount,
+                    expected: watchCoordinator.expectedFileCount
+                )
+            }
+            return
+        }
+
+        // Check if we already have watch data locally
         let fileManager = FileManager.default
-        guard let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            await MainActor.run { watchStatus = .noData }
+            return
+        }
         let sessionFolder = docURL.appendingPathComponent("Sessions").appendingPathComponent(session.folderPath)
 
         if WatchCoordinator.shared.hasWatchData(sessionFolder: sessionFolder) {
             await MainActor.run { watchStatus = .hasData }
-            return
-        }
-
-        // Check if watch is reachable
-        await MainActor.run {
-            if WCSession.default.isReachable {
-                watchStatus = .reachable
-            } else {
-                watchStatus = .notReachable
-            }
+        } else {
+            await MainActor.run { watchStatus = .noData }
         }
     }
 
@@ -667,11 +721,14 @@ struct SyncCard: View {
                     recording: response.recording,
                     allSynced: response.all_synced,
                     anySyncing: response.any_syncing,
+                    totalSegments: response.total_segments ?? 0,
                     cameras: response.cameras.map { cam in
                         PreflightStatus.CameraSync(
                             name: cam.name,
                             connected: cam.connected,
                             syncStatus: cam.sync_status ?? "idle",
+                            segmentsOnCtlr: cam.segments_on_ctlr ?? 0,
+                            segmentsExpected: cam.segments_expected ?? 0,
                             segmentsPending: cam.segments_pending ?? 0
                         )
                     }
@@ -684,6 +741,7 @@ struct SyncCard: View {
                     recording: false,
                     allSynced: true,
                     anySyncing: false,
+                    totalSegments: 0,
                     cameras: []
                 )
             }
@@ -698,33 +756,7 @@ struct SyncCard: View {
         syncResult = nil
 
         Task {
-            // Step 1: Request watch data if watch is reachable and we don't have data yet
-            if watchStatus == .reachable, let sessionID = session.externalUUID ?? Optional(session.id.uuidString) {
-                await MainActor.run {
-                    isRequestingWatchData = true
-                    watchStatus = .transferring
-                }
-
-                let watchSuccess = await WatchCoordinator.shared.requestSessionData(
-                    sessionID: sessionID,
-                    timeout: 30
-                )
-
-                await MainActor.run {
-                    isRequestingWatchData = false
-                    watchStatus = watchSuccess ? .hasData : .reachable
-                }
-
-                if !watchSuccess {
-                    await MainActor.run {
-                        syncResult = .error("Failed to get watch data")
-                        isSyncing = false
-                    }
-                    return
-                }
-            }
-
-            // Step 2: Upload all data to controller
+            // Upload all data to controller (phone + watch if available)
             do {
                 let count = try await StorageService.shared.uploadSession(session: session)
                 await MainActor.run {
@@ -750,16 +782,17 @@ private struct SyncStatusResponse: Codable {
     let uuid: String?
     let all_synced: Bool
     let any_syncing: Bool
+    let total_segments: Int?
     let cameras: [CameraSyncStatus]
 
     struct CameraSyncStatus: Codable {
         let name: String
         let connected: Bool
         let sync_status: String?
-        let segments_local: Int?
         let segments_on_ctlr: Int?
+        let segments_expected: Int?
         let segments_pending: Int?
-        let error: String?
+        let last_sync: String?
     }
 }
 

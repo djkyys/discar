@@ -686,18 +686,7 @@ private struct SensorStatusCardCompact: View {
     }
 
     private func iconFor(_ name: String) -> String {
-        switch name.lowercased() {
-        case let n where n.contains("accelerometer"): return "move.3d"
-        case let n where n.contains("gyro"): return "rotate.3d"
-        case let n where n.contains("magnet"): return "safari"  // compass-like
-        case let n where n.contains("motion"): return "figure.walk"
-        case let n where n.contains("gps"), let n where n.contains("location"): return "location.fill"
-        case let n where n.contains("heading"), let n where n.contains("compass"): return "location.north.fill"
-        case let n where n.contains("barometer"), let n where n.contains("altitude"): return "barometer"
-        case let n where n.contains("gravity"): return "arrow.down.circle"
-        case let n where n.contains("orientation"): return "gyroscope"
-        default: return "sensor"
-        }
+        SensorType.from(name: name)?.icon ?? "sensor"
     }
 
     var body: some View {

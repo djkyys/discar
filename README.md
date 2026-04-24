@@ -375,3 +375,40 @@ Status Tab (merged)
 
 **StatusView.swift**
 - Added alerts for watch start/stop prompts
+
+---
+
+## Changelog (April 24, 2026)
+
+### Sync Status Improvements
+
+**SessionDetailView - SyncCard Overhaul**
+- UUID-based sync status: Now queries `/api/sync/status?uuid=X` for session-specific data
+- Real-time segment counts: Shows "X/Y" format per camera (e.g., "2/5 segments")
+- Auto-polling: Polls every 3 seconds while syncing, stops when complete
+- Better status handling:
+  - `syncing` → spinner + X/Y (orange)
+  - `waiting` → spinner + 0/Y (orange) - waiting for first segment
+  - `partial` → X/Y (yellow) - some synced
+  - `complete` → X/Y + checkmark (green)
+  - Connected but no data yet → spinner + "Waiting..."
+  - Not connected → "No data"
+
+**Watch Status Simplified**
+- Removed request-based watch data fetch (auto-sync handles it)
+- Shows "Data Ready" if local watch CSV files exist
+- Shows "No data" if watch wasn't recording for this session
+- Shows transfer progress when watch is actively syncing
+
+**Controller API Changes**
+- `/api/sync/status?uuid=X` now counts actual segment files on disk per camera
+- Returns: `segments_on_ctlr`, `segments_expected`, `segments_pending`, `total_segments`
+- Added `/api/can/status` endpoint (was missing, caused 404s)
+
+### Files Modified
+
+- `Features/Sessions/SessionDetailView.swift` - SyncCard overhaul with polling
+- `Core/Components/SensorStatusCard.swift` - Minor fixes
+- `Core/State/SensorHealth.swift` - Minor fixes
+- `Features/Status/StatusView.swift` - Minor fixes
+- `Models/SensorType.swift` - Added sensor type definitions

@@ -89,32 +89,13 @@ private struct SensorStatusRow: View {
     }
 
     private var shortName: String {
-        // Shorten common sensor names
-        name.replacingOccurrences(of: "Device ", with: "")
+        SensorType.from(name: name)?.shortName ?? name
+            .replacingOccurrences(of: "Device ", with: "")
             .replacingOccurrences(of: "Core ", with: "")
     }
 
     private var sensorIcon: String {
-        switch name.lowercased() {
-        case let n where n.contains("accelerometer"):
-            return "figure.walk"
-        case let n where n.contains("gyro"):
-            return "rotate.3d"
-        case let n where n.contains("magnet"):
-            return "scope"
-        case let n where n.contains("motion"):
-            return "arrow.trianglehead.2.clockwise.rotate.90"
-        case let n where n.contains("gps"), let n where n.contains("location"):
-            return "location.fill"
-        case let n where n.contains("compass"), let n where n.contains("heading"):
-            return "location.north.fill"
-        case let n where n.contains("barometer"), let n where n.contains("altitude"):
-            return "barometer"
-        case let n where n.contains("gravity"):
-            return "arrow.down.circle"
-        default:
-            return "sensor"
-        }
+        SensorType.from(name: name)?.icon ?? "sensor"
     }
 }
 

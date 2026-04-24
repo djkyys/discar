@@ -91,14 +91,14 @@ struct SensorHealth {
     /// All statuses for iteration
     var allStatuses: [(name: String, shortName: String, icon: String, status: Status)] {
         [
-            ("Accelerometer", "Accel", "arrow.up.arrow.down", accelerometer),
-            ("Gyroscope", "Gyro", "gyroscope", gyroscope),
-            ("Magnetometer", "Mag", "magnet", magnetometer),
-            ("Barometer", "Baro", "barometer", barometer),
-            ("GPS", "GPS", "location.fill", gps),
-            ("Device Motion", "Motion", "iphone.gen3", deviceMotion),
-            ("AirPods Motion", "AirPods", "airpodspro", headphoneMotion),
-            ("Compass", "Compass", "location.north.fill", compass)
+            (SensorType.accelerometer.displayName, SensorType.accelerometer.shortName, SensorType.accelerometer.icon, accelerometer),
+            (SensorType.gyroscope.displayName, SensorType.gyroscope.shortName, SensorType.gyroscope.icon, gyroscope),
+            (SensorType.magnetometer.displayName, SensorType.magnetometer.shortName, SensorType.magnetometer.icon, magnetometer),
+            (SensorType.barometer.displayName, SensorType.barometer.shortName, SensorType.barometer.icon, barometer),
+            (SensorType.gps.displayName, SensorType.gps.shortName, SensorType.gps.icon, gps),
+            (SensorType.deviceMotion.displayName, SensorType.deviceMotion.shortName, SensorType.deviceMotion.icon, deviceMotion),
+            (SensorType.headphoneMotion.displayName, SensorType.headphoneMotion.shortName, SensorType.headphoneMotion.icon, headphoneMotion),
+            (SensorType.heading.displayName, SensorType.heading.shortName, SensorType.heading.icon, compass)
         ]
     }
 

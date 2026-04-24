@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import Combine
 import OSLog
 
 @MainActor

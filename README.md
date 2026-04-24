@@ -214,21 +214,23 @@ The watch uses a **decoupled flow** via `applicationContext` instead of direct m
 - Shows session UUID (first 8 characters) when phone is recording
 
 **Manual Watch Control:**
-- Start button: Enabled when phone is recording (uses phone's sessionID)
+- Start button: Always enabled (green when phone recording, orange when not)
+- Uses phone's full sessionID if available, otherwise generates own UUID
 - Stop button: Shown during watch recording
 - User has full control over watch recording lifecycle
+- No strict restrictions - just visual guidance
 
-**Recording Flow:**
+**Recommended Flow:**
 1. User taps Record on iPhone
-2. Phone publishes state: `{phoneRecording: true, sessionID: uuid}`
+2. Phone publishes state: `{phoneRecording: true, sessionID: "full-uuid"}`
 3. Phone shows prompt: "Open Watch app and tap Start"
-4. User opens Watch app, sees phone status panel
-5. User taps Start on Watch to begin watch recording
+4. User opens Watch app, sees phone status panel with UUID
+5. User taps Start on Watch → uses same UUID as phone
 6. User taps Stop on iPhone when done
 7. Phone publishes state: `{phoneRecording: false}`
 8. Phone shows prompt: "Open Watch app and tap Stop"
 9. User taps Stop on Watch to end watch recording
-10. Watch auto-syncs files to phone
+10. Watch auto-syncs files to `Sessions/{uuid}/watch/` on phone
 
 **File Sync (Watch → Phone):**
 - Triggered automatically after watch recording stops
@@ -339,10 +341,16 @@ Status Tab (merged)
 
 ### Decoupled Watch Flow
 
+**Unified Watch Managers:**
+- iPhone: `WatchCoordinator` (single manager for all watch communication)
+- Watch: `WatchConnectionManager` (handles WCSession) + `WatchSensorManager` (records sensors)
+- Old duplicates deleted: `ConnectivityManager`, `WatchDataTransferManager`
+
 **WatchCoordinator.swift (iPhone)**
 - Removed `startRecording(sessionID:timeout:)` - no longer waits for watch
-- Removed `sendStatus()` - replaced with `publishRecordingState()`
+- Removed `sendStatus()`, `WatchCommand` enum, `receivedCommand` - all legacy coupled flow
 - Added `publishRecordingState(isRecording:sessionID:)` using `updateApplicationContext`
+- All iPhone watch status UI uses `WatchCoordinator.shared.$isReachable`
 
 **WatchConnectionManager.swift (Watch)**
 - Added `phoneIsRecording`, `phoneSessionID`, `phoneStateTimestamp` published properties
@@ -350,17 +358,20 @@ Status Tab (merged)
 - Added `processPhoneState()` to handle applicationContext updates
 - Added `startWatchRecording()` and `stopWatchRecording()` for manual control
 - Reads existing applicationContext on activation
+- Removed legacy message handlers (old coupled flow)
+- Removed dead `getStatus` command
 
 **Watch ContentView.swift**
 - Added phone status panel showing connection and recording state
 - Added manual Start/Stop buttons for watch recording
-- Start button disabled until phone is recording
-- Displays phone's session UUID when available
+- Start button always enabled (green/orange color indicates phone state)
+- Displays phone's full session UUID (truncated for display)
 
 **RecordViewModel.swift**
 - Replaced watch synchronous start with `publishRecordingState()`
 - Replaced watch stop message with `publishRecordingState(isRecording: false)`
 - Added `showWatchStartPrompt` and `showWatchStopPrompt` alerts
+- Removed Combine subscription to watch commands (no longer needed)
 
 **StatusView.swift**
 - Added alerts for watch start/stop prompts

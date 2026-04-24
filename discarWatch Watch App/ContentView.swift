@@ -153,7 +153,7 @@ struct ContentView: View {
             Text("Watch Ready")
                 .font(.headline)
 
-            // Start Button - enabled when phone is recording
+            // Start Button - always enabled, uses phone's UUID if available
             Button {
                 Task {
                     await connectionManager.startWatchRecording()
@@ -166,14 +166,16 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .disabled(!connectionManager.phoneIsRecording)
+            .tint(connectionManager.phoneIsRecording ? .green : .orange)
 
-            if !connectionManager.phoneIsRecording {
-                Text("Start recording on iPhone first")
+            if connectionManager.phoneIsRecording {
+                Text("Will use iPhone session")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            } else {
+                Text("iPhone not recording")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
         }
     }

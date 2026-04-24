@@ -24,9 +24,6 @@ class WatchCoordinator: NSObject, ObservableObject {
     @Published var isReachable = false
     @Published var activationState: WCSessionActivationState = .notActivated
 
-    /// Commands received from watch
-    @Published var receivedCommand: WatchCommand?
-
     /// Transfer state
     @Published var isTransferring = false
     @Published var transferProgress: Double = 0
@@ -34,14 +31,6 @@ class WatchCoordinator: NSObject, ObservableObject {
     @Published var expectedFileCount = 0
     @Published var transferComplete = false
     @Published var currentTransferSessionID: String?
-
-    // MARK: - Types
-
-    enum WatchCommand: String {
-        case startRecording
-        case stopRecording
-        case getStatus
-    }
 
     // MARK: - Private State
 
@@ -267,6 +256,7 @@ extension WatchCoordinator: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         Task { @MainActor in
+            // Handle file transfer messages from watch
             if let commandString = message["command"] as? String {
                 switch commandString {
                 case "watchTransferStarted":
@@ -282,9 +272,7 @@ extension WatchCoordinator: WCSessionDelegate {
                     }
 
                 default:
-                    if let command = WatchCommand(rawValue: commandString) {
-                        self.receivedCommand = command
-                    }
+                    break
                 }
             }
         }

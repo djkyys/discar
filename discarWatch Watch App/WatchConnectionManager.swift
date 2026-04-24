@@ -60,10 +60,6 @@ class WatchConnectionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     func checkPhoneStatus() {
         isPhoneReachable = WCSession.default.activationState == .activated && WCSession.default.isReachable
-
-        if isPhoneReachable {
-            sendMessage(["command": "getStatus"])
-        }
     }
 
     // MARK: - Manual Watch Control (Decoupled Flow)
@@ -156,76 +152,21 @@ class WatchConnectionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     // MARK: - WCSessionDelegate
 
-    /// Handle messages WITH reply (used for start recording confirmation)
-    func session(_ session: WCSession, didReceiveMessage message: [String : Any],
-                 replyHandler: @escaping ([String : Any]) -> Void) {
-        logger.info("📥 Received message with reply handler")
-
-        // Handle startRecording command with confirmation
-        if let command = message["command"] as? String, command == "startRecording" {
-            let sessionID = message["sessionID"] as? String
-            logger.info("📥 startRecording command, sessionID: \(sessionID ?? "nil")")
-
-            Task { @MainActor in
-                self.isPhoneReachable = true
-                self.errorMessage = nil
-                self.isRecording = true
-
-                await WatchSensorManager.shared.startRecording(sessionID: sessionID, resume: false)
-
-                // Confirm back to phone
-                replyHandler(["started": true])
-                self.logger.info("✅ Replied: started = true")
-            }
-            return
-        }
-
-        // For other messages, just acknowledge
-        replyHandler(["received": true])
-    }
-
-    /// Handle messages WITHOUT reply (fire and forget)
+    /// Handle messages from iPhone (file transfer requests only)
     func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
         DispatchQueue.main.async {
-            // If we receive any message, the phone is reachable
             self.isPhoneReachable = true
-            self.errorMessage = nil // Clear errors on success
+            self.errorMessage = nil
 
-            // Handle sendSession command from iPhone
-            if let command = message["command"] as? String {
-                self.logger.info("📥 Received command: \(command)")
-
-                if command == "sendSession" {
-                    if let sessionID = message["sessionID"] as? String {
-                        self.logger.info("📥 Processing sendSession for sessionID: \(sessionID)")
-                        self.transferSessionFiles(sessionID: sessionID)
-                    } else {
-                        self.logger.error("❌ sendSession command missing sessionID")
-                    }
-                    return
+            // Handle sendSession command for file transfer
+            if let command = message["command"] as? String, command == "sendSession" {
+                if let sessionID = message["sessionID"] as? String {
+                    self.logger.info("📥 Processing sendSession for sessionID: \(sessionID)")
+                    self.transferSessionFiles(sessionID: sessionID)
                 }
             }
 
-            if let recordingState = message["isRecording"] as? Bool {
-                let sessionID = message["sessionID"] as? String
-                let currentlyRecording = WatchSensorManager.shared.isRecording
-
-                print("📩 Received message - isRecording: \(recordingState), sessionID: \(sessionID ?? "nil")")
-                print("📩 Current WatchSensorManager.isRecording: \(currentlyRecording)")
-
-                self.isRecording = recordingState
-
-                Task { @MainActor in
-                    if recordingState {
-                        // If already recording, this should resume (maintenance) not restart (new UUID)
-                        let shouldResume = currentlyRecording
-                        await WatchSensorManager.shared.startRecording(sessionID: sessionID, resume: shouldResume)
-                    } else {
-                        await WatchSensorManager.shared.stopRecording()
-                    }
-                }
-            }
-
+            // Handle error messages
             if let error = message["error"] as? String {
                 self.errorMessage = error
             }

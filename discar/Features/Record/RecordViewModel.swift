@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import Combine
 import OSLog
 
 @MainActor
@@ -61,7 +60,6 @@ class RecordViewModel: ObservableObject {
     private let sensorManager = SensorManager()
     private var modelContext: ModelContext?
     private var currentSession: Session?
-    private var cancellables = Set<AnyCancellable>()
     private var canPollTimer: Timer?
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "discar", category: "RecordViewModel")
@@ -79,16 +77,6 @@ class RecordViewModel: ObservableObject {
         // Bind to WatchCoordinator state
         WatchCoordinator.shared.$isReachable.assign(to: &$isWatchConnected)
 
-        // Listen for watch commands
-        WatchCoordinator.shared.$receivedCommand
-            .compactMap { $0 }
-            .sink { [weak self] command in
-                Task { @MainActor [weak self] in
-                    await self?.handleWatchCommand(command)
-                }
-            }
-            .store(in: &cancellables)
-
         // Pre-warm sensors for faster start
         Task {
             sensorManager.warmUp()
@@ -100,24 +88,6 @@ class RecordViewModel: ObservableObject {
         self.modelContext = context
     }
 
-    // MARK: - Watch Command Handler
-
-    private func handleWatchCommand(_ command: WatchCoordinator.WatchCommand) async {
-        switch command {
-        case .startRecording:
-            await startRecording()
-        case .stopRecording:
-            await stopRecording()
-        case .getStatus:
-            WatchCoordinator.shared.sendStatus(
-                isRecording: isRecording,
-                duration: currentDuration,
-                sessionID: currentUUID
-            )
-        }
-        // Clear the command
-        WatchCoordinator.shared.receivedCommand = nil
-    }
 
     // MARK: - Recording Control
 
@@ -171,7 +141,8 @@ class RecordViewModel: ObservableObject {
         } catch {
             if !isTestMode {
                 logger.error("Controller start failed: \(error.localizedDescription)")
-                WatchCoordinator.shared.sendStatus(isRecording: false)
+                // Publish failed state so watch knows phone isn't recording
+                WatchCoordinator.shared.publishRecordingState(isRecording: false)
                 showError("Failed to start cameras: \(error.localizedDescription)")
                 isStarting = false
                 return
